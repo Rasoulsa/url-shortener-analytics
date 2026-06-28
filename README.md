@@ -1,7 +1,7 @@
 # 🔗 URL Shortener & Analytics
 
-![CI](https://github.com/<your-username>/url-shortener-analytics/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-3.12-blue)
+![CI](https://github.com/Rasoulsa/url-shortener-analytics/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.13-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
