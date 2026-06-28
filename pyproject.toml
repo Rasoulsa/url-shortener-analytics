@@ -76,7 +76,7 @@ skip-magic-trailing-comma = false
 
 # ── mypy ───────────────────────────────────────────────────
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 ignore_missing_imports = true
 strict = false
 exclude = ["alembic/", ".venv/"]
