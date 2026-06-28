@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Test / lint artefacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Git
+.git/
+.gitignore
+
+# Docs
+docs/
+*.md
+
+# GeoIP (mounted as volume at runtime)
+geoip/
+
+# IDE
+.vscode/
+.idea/
