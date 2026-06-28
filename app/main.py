@@ -35,11 +35,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers ──────────────────────────────────────────────────
-# /api/* MUST be registered before /{short_code} catch-all
+# ── API Routers ───────────────────────────────────────────────
+# /api/* routes should be registered before /{short_code}
 app.include_router(auth.router)
 app.include_router(links.router)
-app.include_router(redirect.router)  # catch-all — always last
 
 
 @app.get("/health", tags=["System"], summary="Health check")
@@ -56,3 +55,8 @@ async def health():
         "version": settings.app_version,
         "dependencies": {"redis": "up" if redis_ok else "down"},
     }
+
+
+# ── Catch-all Redirect ────────────────────────────────────────
+# MUST be last because it likely defines "/{short_code}"
+app.include_router(redirect.router)
