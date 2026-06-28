@@ -1,224 +1,113 @@
 # Design Decisions
 
-## 1. Short-Code Generation
-
-### Decision
-
-Use:
-
-```text
-Random Base62 + Redis SETNX reservation + PostgreSQL UNIQUE constraint
-```
+Trade-offs made during development.
+Updated daily as new decisions are made.
 
 ---
 
-### Options Considered
+## 1. Short-Code Generation Algorithm
 
-| Approach | Speed | Privacy | Complexity | Decision |
-|---|---|---|---|---|
-| Counter + Base62 | Very fast | Poor, sequential/guessable | Low | Rejected |
-| Pre-generated pool | Very fast | Good | High | Rejected |
-| Random Base62 + SETNX | Very fast | Good | Medium | Chosen |
+### Options considered
 
----
+| Approach | Throughput | Privacy | Complexity | Verdict |
+|----------|-----------|---------|------------|---------|
+| Counter + Base62 | Highest | ❌ Sequential = guessable | Low | Rejected |
+| Pre-generated pool | Highest at request time | ✅ Unpredictable | High | Rejected |
+| **Random + SETNX** | Very high | ✅ Unpredictable | Low | ✅ Chosen |
 
-### Why Not Counter + Base62?
+### Why Random + SETNX
 
-A counter-based approach is simple:
+**Privacy:** Counter codes are sequential. An attacker iterates
+`abc0001`, `abc0002` → harvests all destination URLs.
+Random codes from 62^7 ≈ 3.5T keyspace are not enumerable.
 
-```text
-1 -> 1
-2 -> 2
-62 -> 10
-```
+**Scalability:** No global counter → no coordination point.
+Multiple API instances generate codes independently.
 
-But it creates predictable URLs.
+**Collision safety (two layers):**
+1. `Redis SET key NX EX=60` — atomic reservation. Only the first
+   requester for a given code succeeds. Others retry immediately.
+2. `UNIQUE` on `links.short_code` — database final safety net.
 
-Problems:
+**Pressure relief:** After N failed retries at length L, transparently
+grow to L+1. Graceful degradation with no manual intervention.
 
-- users can guess nearby links
-- total link count is exposed
-- privacy is weaker
-- abuse scraping becomes easier
-
-Counter-based Base62 is still useful as a demonstration and is implemented as helper functions:
-
-```python
-encode_base62(number)
-decode_base62(code)
-```
-
-But it is not the primary production strategy.
+### Trade-off accepted
+Non-zero (astronomically small) collision probability vs a counter's
+mathematical zero. The two-layer defense makes an actual persisted
+duplicate impossible in practice.
 
 ---
 
-### Why Random Base62?
+## 2. Cursor (Keyset) Pagination
 
-A random Base62 code is harder to enumerate.
+**Rejected:** `LIMIT 20 OFFSET 1000`
+- Postgres scans and discards 1000 rows on every page request
+- Slower as pages go deeper
+- Page drift: new inserts shift items between page loads
 
-Current alphabet:
-
-```text
-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
-```
-
-For 7 characters:
-
-```text
-62^7 = 3,521,614,606,208
-```
-
-That is approximately 3.5 trillion possible codes.
-
-Benefits:
-
-- non-sequential
-- privacy-friendly
-- horizontally scalable
-- no global counter bottleneck
+**Chosen:** `WHERE id < cursor ORDER BY id DESC LIMIT 20`
+- Uses primary key index directly — O(log n) at any depth
+- Stable: new inserts never cause drift
+- `meta.next_cursor` in envelope tells client where to continue
 
 ---
 
-### Why Redis SETNX?
+## 3. Response Envelope `{data, meta, errors}`
 
-Redis `SET NX` atomically sets a key only if it does not already exist.
-
-Reservation key format:
-
-```text
-code_reserved:{code}
-```
-
-Example:
-
-```text
-code_reserved:abc1234
-```
-
-This prevents two concurrent workers from thinking they both own the same code.
-
-Reservation TTL:
-
-```text
-60 seconds
-```
-
-This means if the app reserves a code but fails before writing to PostgreSQL, the reservation automatically expires.
+Established on Day 1, not added later. Reason: retrofitting an
+envelope on a live API breaks all existing clients. Benefits:
+- One response handler on the frontend for every endpoint
+- Pagination always lives in `meta`, never mixed into `data`
+- `errors` array supports multiple validation messages at once
 
 ---
 
-### Collision Handling
+## 4. Lazy Deletion for Expired Links
 
-Flow:
+**Rejected:** Background cron that periodically deletes expired rows
+- Extra service to deploy and monitor
+- Links are effectively dead at `expires_at` anyway
 
-```text
-generate random code
-  |
-  v
-try Redis SETNX reservation
-  |
-  |-- success -> use code
-  |
-  |-- collision -> retry
-```
-
-If all attempts fail:
-
-```text
-increase length by 1 and retry
-```
-
-This allows the keyspace to grow automatically under extreme pressure.
+**Chosen:** Check expiry on access, return 410 Gone
+- Zero extra infrastructure
+- Dead the instant `expires_at` passes
+- Day 2 upgrade: also invalidate Redis cache on expiry detection
 
 ---
 
-### Final Safety Net
+## 5. 301 vs 302 Redirect
 
-PostgreSQL should still enforce a unique constraint on the short code.
+Exposed as `is_permanent: bool` on each link.
 
-Reason:
+| | 301 Permanent | 302 Temporary |
+|---|---|---|
+| Browser | Caches redirect | Re-requests every visit |
+| Analytics | Fires once per browser | Fires on every visit |
+| Use case | Stable permanent links | Campaign / tracked links |
+| Default | — | ✅ (false) |
 
-Redis reservation protects the normal concurrent path, but the database remains the source of truth.
-
-The final consistency chain is:
-
-```text
-Random generation
-  +
-Redis SETNX reservation
-  +
-PostgreSQL UNIQUE constraint
-```
+Default is `false` (302) because most use cases involve analytics
+where every visit should be counted.
 
 ---
 
-## 2. Environment File Strategy
+## 6. `main`-Only Branching Strategy
 
-### Decision
-
-Commit only:
-
-```text
-.env.example
-```
-
-Do not commit:
-
-```text
-.env
-.env.dev
-```
-
-Reason:
-
-- `.env.example` documents required variables
-- `.env` and `.env.dev` may contain secrets
-- local values can differ from deployment values
-
-For local Docker development:
-
-```bash
-cp .env.example .env.dev
-docker compose up --build
-```
+`develop` exists to protect `main` from broken integration between
+multiple developers. This is a solo project — that problem
+doesn't apply. Feature branches → PR → `main` gives:
+- Always-green, always-deployable `main`
+- Full PR history showing process and decisions
+- No unnecessary ceremony for a solo build
 
 ---
 
-## 3. Docker Service Names
+## 7. Caching Strategy *(Day 2)*
+*(to be filled)*
 
-Inside Docker Compose, services communicate using service names:
+## 8. Rate Limiting Strategy *(Day 2)*
+*(to be filled)*
 
-```text
-db
-redis
-```
-
-Therefore:
-
-```ini
-POSTGRES_HOST=db
-REDIS_URL=redis://redis:6379/0
-```
-
-This is correct inside Docker.
-
-If running locally outside Docker, use:
-
-```ini
-POSTGRES_HOST=localhost
-REDIS_URL=redis://localhost:6379/0
-```
-
----
-
-## 4. Redis DB Separation
-
-Redis logical databases are separated by responsibility:
-
-```text
-0 -> app cache / short-code reservation
-1 -> Celery broker
-2 -> Celery result backend
-```
-
-This makes debugging and clearing data easier during development.
+## 9. Async Analytics Pipeline *(Day 3)*
+*(to be filled)*

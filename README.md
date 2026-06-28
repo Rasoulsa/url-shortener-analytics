@@ -1,249 +1,285 @@
-# URL Shortener & Analytics
+# 🔗 URL Shortener & Analytics
 
-A high-performance URL shortener built with **FastAPI**, **PostgreSQL**, **Redis**, **Celery**, and **Docker**.
+![CI](https://github.com/<your-username>/url-shortener-analytics/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-The project focuses on reliable short-code generation, scalable redirects, Redis-backed caching, and analytics-ready architecture.
+A production-minded URL shortening service with intelligent Redis
+caching, non-blocking analytics collection, and a live dashboard.
 
----
-
-## Features
-
-- Create short links from long URLs
-- Generate unpredictable Base62 short codes
-- Reserve codes atomically using Redis `SETNX`
-- Prevent collisions with retry logic and database uniqueness constraints
-- PostgreSQL persistence with SQLAlchemy async support
-- Redis support for caching and reservation flows
-- Celery-ready background worker setup
-- Docker Compose development environment
-- Alembic migration support
-- Test coverage for short-code generation logic
+> **Build log:** [docs/JOURNAL.md](docs/JOURNAL.md) — daily decisions and trade-offs.
 
 ---
 
-## Tech Stack
-
-| Area | Technology |
-|---|---|
-| API | FastAPI |
-| ASGI Server | Uvicorn |
-| Database | PostgreSQL |
-| ORM | SQLAlchemy Async |
-| Migrations | Alembic |
-| Cache / Queue | Redis |
-| Background Jobs | Celery |
-| Package Manager | uv |
-| Testing | pytest, pytest-asyncio |
-| Linting / Formatting | Ruff |
-| Type Checking | mypy |
-| Containerization | Docker, Docker Compose |
+## Table of Contents
+1. [Problem & Solution](#1-problem--solution)
+2. [Architecture](#2-architecture)
+3. [Installation & Execution](#3-installation--execution)
+4. [API Usage](#4-api-usage)
+5. [Technologies](#5-technologies)
+6. [Assumptions & Limitations](#6-assumptions--limitations)
+7. [Project Structure](#7-project-structure)
 
 ---
 
-## Project Structure
+## 1. Problem & Solution
 
-```text
-.
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── models/
-│   ├── schemas/
-│   ├── services/
-│   ├── tasks/
-│   └── main.py
-├── alembic/
-├── docs/
-├── geoip/
-├── tests/
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-├── README.md
-└── CHANGELOG.md
-```
+### Problem
+Long URLs are hard to share, track, and manage. Teams need:
+- Short, branded links with optional custom aliases
+- High-speed redirects that never block on analytics
+- Rich insight: who clicks, when, from where, on what device
+- Protection against abuse and full lifecycle control
 
-## Environment Variables
+### Solution
+A service that shortens, redirects, and analyzes:
 
-The committed template is:
+| Principle | Implementation |
+|-----------|---------------|
+| Performance first | Redis cache-aside — redirects never hit the DB |
+| Non-blocking analytics | Celery tasks process GeoIP + UA asynchronously |
+| Privacy by design | IPs anonymized (last octet zeroed) before storage |
+| Developer-friendly | Versioned REST API with Swagger + ReDoc |
 
-```text
-.env.example
-```
+### Features
+- [x] API-key authenticated REST API (`/api/v1`)
+- [x] Base62 short codes — unpredictable, collision-safe (SETNX)
+- [x] Custom aliases, expiry dates, password-protected links
+- [x] 301 (permanent) / 302 (temporary) redirect control
+- [x] Consistent response envelope `{data, meta, errors}`
+- [x] Cursor/keyset pagination
+- [ ] Redis cache-aside + write-through counters *(Day 2)*
+- [ ] Sliding-window rate limiting *(Day 2)*
+- [ ] Async GeoIP + UA analytics pipeline *(Day 3)*
+- [ ] Time-series stats API *(Day 3)*
+- [ ] Webhooks on click thresholds *(Day 3)*
+- [ ] Analytics dashboard *(Day 4)*
 
-For local Docker development, create:
+---
 
-```bash
+## 2. Architecture
+
+\`\`\`
+              ┌──────────────────────────────────────────────┐
+  Client ───▶ │  FastAPI Application                          │
+              │                                               │
+              │  /api/v1/auth      Registration + API key    │
+              │  /api/v1/links     CRUD + pagination          │
+              │  /api/v1/analytics Time-series stats (Day 3) │
+              │  /{short_code}     Redirect (hot path)        │
+              │  /dashboard        Chart.js UI (Day 4)        │
+              │  /health           System status              │
+              └──────────────┬──────────────────┬────────────┘
+                             │                  │
+                 ┌───────────▼───────┐  ┌───────▼────────────┐
+                 │  Redis            │  │  PostgreSQL         │
+                 │  · cache-aside    │  │  · users            │
+                 │  · write-through  │  │  · links            │
+                 │  · rate limiting  │  │  · clicks (TS)      │
+                 │  · SETNX reserve  │  └───────▲────────────┘
+                 └───────────┬───────┘          │
+                             │ enqueue    flush  │
+                 ┌───────────▼──────────────────┴──────────┐
+                 │  Celery Worker + Beat          (Day 3)   │
+                 │  · GeoIP lookup (MaxMind offline)        │
+                 │  · User-agent parsing                    │
+                 │  · Counter flush to Postgres             │
+                 │  · Webhook firing on threshold           │
+                 └─────────────────────────────────────────┘
+\`\`\`
+
+Full details → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+---
+
+## 3. Installation & Execution
+
+### Prerequisites
+- Docker + Docker Compose
+- Git
+- [uv](https://docs.astral.sh/uv/) (for local dev outside Docker)
+- *(Optional)* MaxMind `GeoLite2-City.mmdb` → see [docs/GEOIP_SETUP.md](docs/GEOIP_SETUP.md)
+
+### Quickstart
+
+\`\`\`bash
+# 1. Clone
+git clone https://github.com/<your-username>/url-shortener-analytics.git
+cd url-shortener-analytics
+
+# 2. Configure environment
 cp .env.example .env.dev
-```
 
-Local/private environment files are intentionally ignored:
-
-```text
-.env
-.env.dev
-```
-
-Important default values:
-
-```ini
-POSTGRES_HOST=db
-REDIS_URL=redis://redis:6379/0
-CELERY_BROKER_URL=redis://redis:6379/1
-CELERY_RESULT_BACKEND=redis://redis:6379/2
-```
-
-These values are correct for Docker Compose because services communicate using Compose service names such as db and redis.
-
-## Local Development with uv
-
-Install dependencies:
-
-```bash
-uv sync --all-extras
-```
-
-Run tests:
-
-```bash
-uv run pytest
-```
-
-Run linting:
-
-```bash
-uv run ruff check .
-```
-
-Run formatter:
-
-```bash
-uv run ruff format .
-```
-
-Run type checks:
-
-```bash
-uv run mypy app/
-```
-
-Run the API locally:
-
-```bash
-uv run uvicorn app.main:app --reload
-```
-
-Note: if running outside Docker, update database and Redis host values from db/redis to localhost.
-
-## Docker Development
-
-Create local dev environment file:
-
-```bash
-cp .env.example .env.dev
-```
-
-Build and start services:
-
-```bash
+# 3. Build and start (migrations run automatically)
 docker compose up --build
-```
 
-Run in background:
+# 4. Open interactive docs
+#    Swagger UI → http://localhost:8000/docs
+#    ReDoc      → http://localhost:8000/redoc
+\`\`\`
 
-```bash
-docker compose up --build -d
-```
+### Local dev (outside Docker)
 
-Run migrations:
+\`\`\`bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-```bash
-docker compose run --rm migrate
-```
+# Install all deps
+uv sync
 
-Stop services:
+# Activate virtual environment
+source .venv/bin/activate
 
-```bash
+# Install git hooks
+uv run pre-commit install
+\`\`\`
+
+### Useful commands
+
+\`\`\`bash
+# Stop stack
 docker compose down
-```
 
-Stop services and remove volumes:
-
-```bash
+# Stop + remove volumes (clean slate)
 docker compose down -v
-```
 
-## Services
+# View API logs
+docker compose logs -f api
 
-The Docker Compose stack includes:
+# Run migrations manually
+docker compose exec api alembic upgrade head
 
-| Service | Description |
-|---|---|
-| api | FastAPI application |
-| db | PostgreSQL database |
-| redis | Redis cache / queue backend |
-| worker | Celery background worker |
-| migrate | One-shot Alembic migration runner |
+# Open Postgres shell
+docker compose exec db psql -U postgres -d urlshort
 
-## Testing
+# Code quality
+uv run ruff check . --fix    # lint
+uv run ruff format .          # format
+uv run mypy app               # type check
+uv run pytest -v              # tests
+\`\`\`
 
-Short-code generation tests cover:
+---
 
-- Base62 alphabet contract
-- Random code length and character set
-- Redis SETNX reservation behavior
-- Collision retry behavior
-- Length growth after retry exhaustion
-- Base62 encode/decode roundtrips
+## 4. API Usage
 
-Run:
+**Auth header:** `X-API-Key: your_key` (all `/api/v1/*` except register)
 
-```bash
-uv run pytest tests/test_shortener.py -v
-```
+**Response envelope:**
+\`\`\`json
+{
+  "data":   { ... },
+  "meta":   { "next_cursor": null, "count": 1 },
+  "errors": []
+}
+\`\`\`
 
-Current status:
+### Register → get API key
+\`\`\`bash
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@example.com","password":"secret123"}'
+\`\`\`
 
-```text
-42 tests passing
-```
+### Create a short link
+\`\`\`bash
+curl -X POST http://localhost:8000/api/v1/links \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "long_url": "https://example.com/very/long/path",
+    "custom_alias": "demo",
+    "expires_at": "2026-12-31T23:59:59Z",
+    "is_permanent": false
+  }'
+\`\`\`
 
-## Design Highlights
+### Use the short link
+\`\`\`bash
+curl -iL http://localhost:8000/demo
+\`\`\`
 
-Short-code generation
+### List links (paginated)
+\`\`\`bash
+# First page
+curl "http://localhost:8000/api/v1/links?limit=20" \
+  -H "X-API-Key: YOUR_KEY"
 
-The chosen algorithm is:
+# Next page (use next_cursor from meta)
+curl "http://localhost:8000/api/v1/links?cursor=42&limit=20" \
+  -H "X-API-Key: YOUR_KEY"
+\`\`\`
 
-```text
-Random Base62 + Redis SETNX reservation + DB UNIQUE constraint
-```
+### Delete a link
+\`\`\`bash
+curl -X DELETE http://localhost:8000/api/v1/links/demo \
+  -H "X-API-Key: YOUR_KEY"
+\`\`\`
 
-Reasons:
+Full reference → [docs/API.md](docs/API.md)
 
-- Codes are unpredictable and not sequential.
-- Redis SETNX provides atomic reservation.
-- No global counter means better horizontal scalability.
-- A 7-character Base62 code has approximately 3.5 trillion combinations.
-- Database uniqueness remains the final safety net.
+---
 
-See:
+## 5. Technologies
 
-```text
-docs/DESIGN_DECISIONS.md
-```
+| Tool | Purpose |
+|------|---------|
+| FastAPI | Async web framework, auto OpenAPI docs |
+| PostgreSQL 16 | Primary data store |
+| Redis 7 | Cache, counters, rate limiting, SETNX |
+| Celery | Async task queue for analytics |
+| SQLAlchemy 2.0 | Async ORM with typed mapped columns |
+| Alembic | Database migrations with autogenerate |
+| Pydantic v2 | Validation, serialization, settings |
+| geoip2 | Offline IP → country/city (MaxMind) |
+| user-agents | Browser/OS/device type parsing |
+| passlib[bcrypt] | Password hashing |
+| uv | Fast Python package manager + lock file |
+| Docker Compose | One-command dev environment |
+| GitHub Actions | CI: lint + type-check + tests |
+| Ruff | Linting + formatting (replaces flake8/black/isort) |
+| mypy | Static type checking |
+| pytest | Unit + integration tests |
 
-## Documentation
+Full justification → [docs/TECH_STACK.md](docs/TECH_STACK.md)
 
-Additional docs:
+---
 
-```text
-docs/ARCHITECTURE.md
-docs/DESIGN_DECISIONS.md
-docs/LOCAL_DEVELOPMENT.md
-```
+## 6. Assumptions & Limitations
+
+See [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for the full list.
+
+**Key points:**
+- API-key auth is sufficient for this evaluation scope
+- GeoIP requires optional MaxMind file — gracefully degrades without it
+- Click analytics have ≤30s lag by design (Redis buffer → Postgres flush)
+- `clicks` table not partitioned in this build (documented as future work)
+
+---
+
+## 7. Project Structure
+
+\`\`\`
+url-shortener-analytics/
+├── app/
+│   ├── core/           config, database, redis, security
+│   ├── models/         SQLAlchemy ORM models
+│   ├── schemas/        Pydantic request/response schemas
+│   ├── services/       business logic (shortener, cache, ratelimit)
+│   ├── tasks/          Celery async tasks (Day 3)
+│   ├── api/v1/         versioned route handlers
+│   └── web/            dashboard templates (Day 4)
+├── alembic/            database migrations
+├── tests/              unit + integration tests
+├── docs/               project documentation
+├── .github/            CI workflows + PR/issue templates
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml
+├── uv.lock
+└── README.md
+\`\`\`
 
 ## License
-
-MIT License.
-
----
+MIT — see [LICENSE](LICENSE)

@@ -1,204 +1,118 @@
-# Architecture
+# Architecture & Design
 
-## Overview
+## 1. System Overview
 
-The URL Shortener & Analytics project is designed as a modular FastAPI application backed by PostgreSQL and Redis.
+\`\`\`
+              ┌──────────────────────────────────────────────┐
+  Client ───▶ │  FastAPI Application                          │
+              │                                               │
+              │  /api/v1/auth      Registration + API key    │
+              │  /api/v1/links     CRUD + pagination          │
+              │  /api/v1/analytics Time-series stats (Day 3) │
+              │  /{short_code}     Redirect (hot path)        │
+              │  /dashboard        Chart.js UI (Day 4)        │
+              │  /health           System status              │
+              └──────────────┬──────────────────┬────────────┘
+                             │                  │
+                 ┌───────────▼───────┐  ┌───────▼────────────┐
+                 │  Redis            │  │  PostgreSQL         │
+                 │  · cache-aside    │  │  · users            │
+                 │  · write-through  │  │  · links            │
+                 │  · rate limiting  │  │  · clicks (TS)      │
+                 │  · SETNX reserve  │  └───────▲────────────┘
+                 └───────────┬───────┘          │
+                             │ enqueue    flush  │
+                 ┌───────────▼──────────────────┴──────────┐
+                 │  Celery Worker + Beat          (Day 3)   │
+                 │  · GeoIP lookup (MaxMind offline)        │
+                 │  · User-agent parsing                    │
+                 │  · Counter flush to Postgres             │
+                 │  · Webhook firing on threshold           │
+                 └─────────────────────────────────────────┘
+\`\`\`
 
-The architecture separates:
+## 2. Layered Architecture
 
-- API routing
-- business logic
-- persistence models
-- configuration
-- background jobs
-- documentation and tests
+\`\`\`
+┌──────────────────────────────────────────────────┐
+│  API Layer         app/api/v1/*                  │  HTTP, auth, validation
+├──────────────────────────────────────────────────┤
+│  Service Layer     app/services/*                │  Business logic
+│  shortener · cache · ratelimit · analytics       │
+├──────────────────────────────────────────────────┤
+│  Data Layer        app/models/*                  │  SQLAlchemy ORM
+├──────────────────────────────────────────────────┤
+│  Infrastructure    Postgres · Redis · Celery     │
+└──────────────────────────────────────────────────┘
+\`\`\`
 
----
+Routers stay thin (parse + validate + delegate).
+Services hold all business logic.
+Models own persistence.
 
-## High-Level Components
+## 3. Data Model (ERD)
 
-```text
-Client
-  |
-  v
-FastAPI API
-  |
-  |-- PostgreSQL
-  |     └── users, links, clicks
-  |
-  |-- Redis
-  |     ├── short-code reservation
-  |     ├── cache
-  |     └── Celery broker/result backend
-  |
-  └-- Celery Worker
-        └── background analytics / future async tasks
-```
+\`\`\`
+users                    links                        clicks
+─────                    ─────                        ──────
+id          PK     ┌───< id           PK        ┌───< id
+email       UQ     │    short_code    UQ INDEX   │    link_id       FK
+hashed_pw          │    long_url                 │    clicked_at
+api_key     UQ     │    user_id       FK         │    ip_anonymized
+created_at         │    password_hash             │    country
+                   │    expires_at    INDEX       │    city
+                   │    is_permanent              │    browser
+                   │    click_count               │    os
+                   │    webhook_url               │    device_type
+                   │    webhook_threshold          │    referrer
+                   │    webhook_fired              │
+                   │    created_at                 │  Indexes:
+                   │    updated_at                 │  (link_id, clicked_at)
+                   └────                           │  (link_id, country)
+                                                   │  (link_id, browser)
+                                                   └────
+\`\`\`
 
----
+## 4. Request Flows
 
-## Application Layers
+### Create short link
+\`\`\`
+POST /api/v1/links
+  → auth (API key lookup)
+  → validate payload (Pydantic)
+  → if custom_alias: DB check + SETNX reserve
+  → else: generate_unique_code (random + SETNX)
+  → INSERT links row
+  → 201 {data: LinkOut}
+\`\`\`
 
-### app/api
-
-Contains FastAPI route handlers and dependency wiring.
-
-Responsibilities:
-
-- receive HTTP requests
-- validate request/response schemas
-- call service-layer functions
-- return API responses
-
-### app/services
-
-Contains business logic.
-
-Current important service:
-
-```text
-app/services/shortener.py
-```
-
-Responsibilities:
-
-- generate random Base62 short codes
-- reserve codes atomically in Redis
-- retry on collisions
-- provide Base62 encode/decode helpers
-
-### app/models
-
-Contains SQLAlchemy ORM models.
-
-Main entities:
-
-| Model | Purpose |
-|---|---|
-| User | Account / owner entity |
-| Link | Shortened URL metadata |
-| Click | Redirect analytics event |
-
-### app/core
-
-Contains shared infrastructure and configuration.
-
-Examples:
-
-| File | Purpose |
-|---|---|
-| config.py | Pydantic settings |
-| redis_client.py | Async Redis client |
-| database-related files | DB session / engine setup |
-
-### app/tasks
-
-Celery-related background task setup.
-
-Expected future responsibilities:
-
-- async analytics enrichment
-- click aggregation
-- webhook delivery
-- periodic cleanup
-
----
-
-## Data Storage
-
-### PostgreSQL
-
-PostgreSQL is the source of truth.
-
-Used for:
-
-- users
-- links
-- click events
-- unique short-code constraint
-
-### Redis
-
-Redis is used for:
-
-- atomic short-code reservation
-- caching hot links
-- Celery broker
-- Celery result backend
-
-Redis DB usage:
-
-```text
-redis://redis:6379/0  application cache / code reservation
-redis://redis:6379/1  Celery broker
-redis://redis:6379/2  Celery result backend
-```
-
----
-
-## Docker Services
-
-| Service | Description |
-|---|---|
-| api | FastAPI app |
-| db | PostgreSQL |
-| redis | Redis |
-| worker | Celery worker |
-| migrate | Alembic migration runner |
-
----
-
-## Request Flow: Short Link Creation
-
-```text
-POST /links
-  |
-  v
-Validate request
-  |
-  v
-Generate random Base62 code
-  |
-  v
-Reserve code in Redis using SETNX
-  |
-  v
-Insert link into PostgreSQL
-  |
-  v
-Return short URL
-```
-
----
-
-## Request Flow: Redirect
-
-```text
+### Redirect — Day 1 (DB only)
+\`\`\`
 GET /{short_code}
-  |
-  v
-Look up short code
-  |
-  |-- Redis cache hit -> redirect
-  |
-  |-- Redis cache miss
-        |
-        v
-      PostgreSQL lookup
-        |
-        v
-      cache result
-        |
-        v
-      redirect
-```
+  → DB lookup
+  → if not found: 404
+  → if expired: 410 (lazy deletion)
+  → if password_hash: return HTML form
+  → click_count += 1 (sync)
+  → 301 or 302
+\`\`\`
 
----
+### Redirect — Day 2 (with Redis cache)
+\`\`\`
+GET /{short_code}
+  → Redis GET
+  → HIT:  INCR counter → 301/302     ← fast path, no DB
+  → MISS: DB lookup → SET cache → 301/302
+\`\`\`
 
-## Scalability Considerations
+### Redirect — Day 3 (full async)
+\`\`\`
+GET /{short_code}
+  → Redis GET
+  → HIT:  record_click.delay(...) → return immediately
+  → MISS: DB lookup → cache → record_click.delay(...) → return
+  [worker]: GeoIP + UA parse + INSERT click + flush counter to DB
+\`\`\`
 
-- Random short-code generation avoids global counters.
-- Redis SETNX avoids race conditions during reservation.
-- PostgreSQL unique constraints provide final consistency.
-- Redis caching reduces DB load for popular links.
-- Celery allows analytics processing to move out of request path.
+## 5. Design Decisions
+→ [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)
