@@ -1,0 +1,56 @@
+# Technologies, Frameworks & Libraries
+
+## Core Stack
+
+| Tool | Version | Purpose | Why chosen |
+|------|---------|---------|------------|
+| **FastAPI** | ≥0.111 | Web framework | Async-native, type-driven, auto Swagger/OpenAPI |
+| **PostgreSQL** | 16 | Primary database | ACID, composite indexes, reliable, widely supported |
+| **Redis** | 7 | Cache / counters / rate-limit / SETNX | Sub-ms latency, atomic operations |
+| **Celery** | ≥5.4 | Async task queue | Non-blocking analytics, retry/backoff built-in |
+| **SQLAlchemy** | ≥2.0 | Async ORM | Modern typed `mapped_column`, async engine |
+| **Alembic** | ≥1.13 | DB migrations | Autogenerate, versioned, rollback support |
+| **Pydantic v2** | ≥2.7 | Validation + settings | Fast, typed, `pydantic-settings` for env config |
+| **asyncpg** | ≥0.29 | Async Postgres driver | Fastest async Postgres driver for Python |
+
+## Analytics & Enrichment
+
+| Tool | Version | Purpose | Why chosen |
+|------|---------|---------|------------|
+| **geoip2** | ≥4.8 | IP → country/city | Offline (MaxMind file), no external API dependency |
+| **user-agents** | ≥2.2 | UA string parsing | Browser, OS, device type extraction |
+
+## Security
+
+| Tool | Version | Purpose | Why chosen |
+|------|---------|---------|------------|
+| **passlib[bcrypt]** | ≥1.7 | Password hashing | Industry standard, bcrypt is time-tested |
+| **secrets** (stdlib) | — | API key + code gen | Cryptographically secure randomness, no extra dep |
+
+## Infrastructure
+
+| Tool | Purpose | Why chosen |
+|------|---------|------------|
+| **Docker** | Containerization | Reproducible environments everywhere |
+| **Docker Compose** | Local orchestration | One-command dev stack |
+| **Uvicorn** | ASGI server (dev) | Fast, supports `--reload` |
+| **Gunicorn** | Process manager (prod, Day 4) | Worker management, battle-tested |
+
+## Developer Tooling
+
+| Tool | Version | Purpose | Why chosen |
+|------|---------|---------|------------|
+| **uv** | latest | Package manager + lock file | 10-100x faster than pip, exact lock file |
+| **Ruff** | ≥0.4 | Lint + format | Replaces flake8 + isort + black in one tool, extremely fast |
+| **mypy** | ≥1.10 | Static type checking | Catches type errors before runtime |
+| **pytest** | ≥8.2 | Testing | Industry standard, async support |
+| **pytest-asyncio** | ≥0.23 | Async test runner | Required for async FastAPI endpoints |
+| **pre-commit** | ≥3.7 | Git hooks | Enforces quality on every commit |
+| **GitHub Actions** | — | CI/CD | Free, native GitHub integration |
+
+## Frontend (Day 4)
+
+| Tool | Purpose |
+|------|---------|
+| **Chart.js** | Analytics dashboard charts |
+| **Jinja2** | Server-side HTML templating |
