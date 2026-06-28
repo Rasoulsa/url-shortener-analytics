@@ -2,7 +2,7 @@
 name = "url-shortener-analytics"
 version = "1.0.0"
 description = "A high-performance URL shortener with intelligent Redis caching and analytics"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
