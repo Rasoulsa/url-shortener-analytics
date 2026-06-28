@@ -12,7 +12,7 @@ class Meta(BaseModel):
     count: int | None = None
 
 
-class Envelope(BaseModel, Generic[T]):
+class Envelope(BaseModel, Generic[T]):  # noqa: UP046
     """
     Consistent API response envelope used on every endpoint.
 
