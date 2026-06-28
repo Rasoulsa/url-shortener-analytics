@@ -1,0 +1,52 @@
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environment ───────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Environment / secrets ─────────────────────────────────
+.env
+.env.dev
+.env.prod
+.env.local
+
+# ── Database ──────────────────────────────────────────────
+*.sqlite3
+*.db
+
+# ── GeoIP database ────────────────────────────────────────
+# Binary ~70MB, MaxMind license forbids redistribution
+geoip/
+*.mmdb
+
+# ── Test & coverage ───────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── Linting & typing ──────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ── IDE ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
