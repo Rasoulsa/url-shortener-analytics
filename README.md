@@ -14,12 +14,13 @@ caching, non-blocking analytics collection, and a live dashboard.
 
 ## Table of Contents
 1. [Problem & Solution](#1-problem--solution)
-2. [Architecture](#2-architecture)
-3. [Installation & Execution](#3-installation--execution)
-4. [API Usage](#4-api-usage)
-5. [Technologies](#5-technologies)
-6. [Assumptions & Limitations](#6-assumptions--limitations)
-7. [Project Structure](#7-project-structure)
+2. [Short Code Generation Algorithm](#2-short-code-generation-algorithm)
+3. [Architecture](#3-architecture)
+4. [Installation & Execution](#4-installation--execution)
+5. [API Usage](#5-api-usage)
+6. [Technologies](#6-technologies)
+7. [Assumptions & Limitations](#7-assumptions--limitations)
+8. [Project Structure](#8-project-structure)
 
 ---
 
@@ -58,7 +59,70 @@ A service that shortens, redirects, and analyzes:
 
 ---
 
-## 2. Architecture
+## 2. Short Code Generation Algorithm
+
+This project uses **Random Base62 generation with Redis SETNX collision retry**.
+Generated short codes use a configurable length, defaulting to `7` characters via:
+```env
+SHORT_CODE_LENGTH=7
+```
+The code alphabet is Base62:
+```text
+0-9, a-z, A-Z
+```
+This keeps generated URLs compact, URL-safe, and free from special characters.
+
+### Considered approaches
+
+| Approach | Throughput | Predictability | Storage / Operational Cost | Decision |
+|---|---:|---:|---:|---|
+| Counter-based encoding | Very high | Poor — sequential IDs are guessable | Low | Rejected |
+| Random Base62 with collision retry | High | Good — codes are difficult to guess | Low | Chosen |
+| Pre-generated pool | Very high at request time | Good if generated randomly | Higher — requires pool storage and refill workers | Rejected for Phase 1 |
+
+### Why Random Base62 + SETNX was chosen
+
+The project chooses **Random Base62 with collision retry** because it provides a strong balance for the Phase 1 requirements:
+
+1. **Unpredictability**
+
+   Random codes avoid exposing sequential database IDs. This makes it harder to guess valid short links.
+
+2. **Good throughput**
+
+   Generating a random Base62 string is fast and does not require a central database counter.
+
+3. **Low operational complexity**
+
+   Unlike a pre-generated pool, there is no need to maintain a background code-generation buffer.
+
+4. **Race-condition-safe uniqueness**
+
+   Redis is used to atomically reserve codes before database insertion:
+
+   ```python
+   redis_client.set(key, "1", nx=True, ex=ttl)
+   ```
+
+   The `nx=True` option gives Redis `SETNX` behavior: only one concurrent request can reserve a generated short code.
+
+5. **Database safety net**
+
+   PostgreSQL also enforces a unique index on `links.short_code`, so even if Redis is bypassed or unavailable, duplicate short codes are still rejected at the database layer.
+
+### Collision handling
+
+If a generated code is already reserved or already exists, the service retries generation. This gives the system collision safety while keeping codes short and random.
+
+For this project scope, a default 7-character Base62 code gives a large key space:
+
+```text
+62^7 = 3,521,614,606,208 possible codes
+```
+
+That is sufficient for Phase 1 while keeping URLs compact.
+
+## 3. Architecture
 
 \`\`\`
               ┌──────────────────────────────────────────────┐
@@ -93,7 +157,7 @@ Full details → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
-## 3. Installation & Execution
+## 4. Installation & Execution
 
 ### Prerequisites
 - Docker + Docker Compose
@@ -162,7 +226,7 @@ uv run pytest -v              # tests
 
 ---
 
-## 4. API Usage
+## 5. API Usage
 
 **Auth header:** `X-API-Key: your_key` (all `/api/v1/*` except register)
 
@@ -221,7 +285,7 @@ Full reference → [docs/API.md](docs/API.md)
 
 ---
 
-## 5. Technologies
+## 6. Technologies
 
 | Tool | Purpose |
 |------|---------|
@@ -246,7 +310,7 @@ Full justification → [docs/TECH_STACK.md](docs/TECH_STACK.md)
 
 ---
 
-## 6. Assumptions & Limitations
+## 7. Assumptions & Limitations
 
 See [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for the full list.
 
@@ -258,7 +322,7 @@ See [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for the full list.
 
 ---
 
-## 7. Project Structure
+## 8. Project Structure
 
 \`\`\`
 url-shortener-analytics/
