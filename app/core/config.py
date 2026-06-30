@@ -23,13 +23,13 @@ class Settings(BaseSettings):
     # ── Redis ─────────────────────────────────────────────
     redis_url: str = "redis://redis:6379/0"
 
-    # ── Celery ─────────────────────────────────────
+    # ── Celery ────────────────────────────────────────────
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
     celery_task_always_eager: bool = False
     celery_result_expires_seconds: int = 3600
 
-    # ── Analytics Queue ───────────────────────────────────────
+    # ── Analytics Queue ───────────────────────────────────
     analytics_queue_enabled: bool = True
 
     # ── Rate limiting ─────────────────────────────────────
@@ -43,13 +43,16 @@ class Settings(BaseSettings):
     rate_limit_api_requests: int = 100
     rate_limit_redirect_requests: int = 60
 
-    # ── Caching ───────────────────────────────────
+    # ── Caching ───────────────────────────────────────────
     hot_link_threshold: int = 50
     hot_link_extended_ttl: int = 86400
     default_cache_ttl: int = 3600
 
-    # ── GeoIP (Day 3) ─────────────────────────────────────
+    # ── GeoIP / Analytics (Phase 3) ─────────────────────────
     geoip_db_path: str = "/data/GeoLite2-City.mmdb"
+    analytics_default_days: int = 7
+    analytics_max_days: int = 90
+    click_counter_flush_seconds: int = 30
 
     @property
     def database_url(self) -> str:

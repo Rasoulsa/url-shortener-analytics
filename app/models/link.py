@@ -59,14 +59,14 @@ class Link(Base):
         nullable=False,
     )
 
-    # Counter, later synchronized with Redis
+    # Counter, synchronized with Redis through asynchronous workers.
     click_count: Mapped[int] = mapped_column(
         Integer,
         default=0,
         nullable=False,
     )
 
-    # Webhooks, added Day 3
+    # Webhooks, added in Phase 3.
     webhook_url: Mapped[str | None] = mapped_column(
         String(2048),
         nullable=True,

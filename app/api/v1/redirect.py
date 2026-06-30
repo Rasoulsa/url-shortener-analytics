@@ -1,17 +1,20 @@
 """
 Redirect endpoint — the hot path of the service.
 
-Day 1: DB-only redirect path.
-Day 2 Branch 1: Redis cache-aside for redirect metadata.
-Day 2 Branch 2: Redis write-through click counters.
+Phase 1:
+- DB-only redirect path.
 
-This branch adds:
-- Redis lookup before DB lookup
-- TTL-aligned metadata cache
-- Lazy deletion for expired links discovered on cache miss
-- Cache-aware password unlock
-- Redis click counter increments on successful redirects
-- Postgres click-count fallback if Redis counter increment fails
+Phase 2:
+- Redis cache-aside for redirect metadata.
+- Redis write-through click counters.
+- Postgres click-count fallback if Redis counter increment fails.
+- Lazy deletion for expired links.
+- Cache-aware password unlock.
+
+Phase 3:
+- Non-blocking click analytics collection.
+- Redirect path enqueues a Celery analytics task.
+- Celery task enriches/persists click details outside the request path.
 """
 
 from __future__ import annotations
@@ -52,6 +55,30 @@ def _to_cached_link(link: Link) -> CachedLink:
     )
 
 
+async def _record_successful_redirect(
+    *,
+    db: AsyncSession,
+    short_code: str,
+    request: Request,
+) -> None:
+    """
+    Record successful redirect side effects.
+
+    Phase 2:
+    - increment Redis click counter
+    - fall back to Postgres click_count increment if Redis fails
+
+    Phase 3:
+    - enqueue detailed analytics event for Celery processing
+
+    Important:
+    - enqueue_click_event fails open internally
+    - redirect should still work if Celery/Redis broker is unavailable
+    """
+    await _record_click(db, short_code)
+    enqueue_click_event(short_code=short_code, request=request)
+
+
 async def _record_click(
     db: AsyncSession,
     short_code: str,
@@ -59,9 +86,11 @@ async def _record_click(
     """
     Record a redirect click.
 
-    Day 2 behavior:
-    - Prefer Redis counter increment for fast redirect path.
-    - Fall back to direct Postgres increment if Redis is unavailable.
+    Preferred:
+    - Redis counter increment for the fast redirect path.
+
+    Fallback:
+    - direct Postgres increment if Redis counter increment fails.
     """
     counter_value = await increment_link_click_counter(redis_client, short_code)
 
@@ -80,7 +109,7 @@ async def _increment_click_count(
     only used if Redis is unavailable or the counter increment fails.
     """
     await db.execute(
-        update(Link).where(Link.short_code == short_code).values(click_count=Link.click_count + 1)
+        update(Link).where(Link.short_code == short_code).values(click_count=Link.click_count + 1),
     )
     await db.commit()
 
@@ -114,6 +143,7 @@ def _password_gate_html(short_code: str, error: str = "") -> str:
     error_block = (
         f'<p style="color:#e74c3c;margin:8px 0;font-size:14px">{error}</p>' if error else ""
     )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -190,17 +220,19 @@ async def redirect(
     3. If cache miss, load from DB.
     4. If expired, lazily delete and return 410.
     5. If valid, cache metadata and redirect or show password gate.
+    6. On successful redirect, enqueue Phase 3 analytics processing.
     """
-    _ = request
-
     cached = await get_cached_link(redis_client, short_code)
 
     if cached is not None:
         if cached.password_hash:
             return HTMLResponse(_password_gate_html(short_code))
 
-        await _record_click(db, cached.short_code)
-        enqueue_click_event(short_code=cached.short_code, request=request)
+        await _record_successful_redirect(
+            db=db,
+            short_code=cached.short_code,
+            request=request,
+        )
 
         return RedirectResponse(
             url=cached.long_url,
@@ -229,8 +261,11 @@ async def redirect(
     if cached.password_hash:
         return HTMLResponse(_password_gate_html(short_code))
 
-    await _record_click(db, cached.short_code)
-    enqueue_click_event(short_code=cached.short_code, request=request)
+    await _record_successful_redirect(
+        db=db,
+        short_code=cached.short_code,
+        request=request,
+    )
 
     return RedirectResponse(
         url=cached.long_url,
@@ -253,6 +288,9 @@ async def unlock(
 
     This also uses cache-aside metadata so the protected link flow benefits
     from Redis after the first lookup.
+
+    On successful unlock, the redirect is counted and a Phase 3 analytics
+    event is enqueued.
     """
     cached = await get_cached_link(redis_client, short_code)
 
@@ -282,8 +320,11 @@ async def unlock(
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
-    await _record_click(db, cached.short_code)
-    enqueue_click_event(short_code=cached.short_code, request=request)
+    await _record_successful_redirect(
+        db=db,
+        short_code=cached.short_code,
+        request=request,
+    )
 
     return RedirectResponse(
         url=cached.long_url,

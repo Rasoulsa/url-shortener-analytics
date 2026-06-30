@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -14,14 +14,28 @@ if TYPE_CHECKING:
 
 class Click(Base):
     """
-    Time-series fact table for click analytics.
+    Time-series fact table for Phase 3 click analytics.
+
+    Each row represents one redirect/click event.
+
+    Captured/enriched data:
+      - precise visit timestamp
+      - anonymized IP address
+      - raw User-Agent
+      - parsed browser
+      - parsed OS
+      - device type
+      - referrer
+      - GeoIP country/city
 
     Index strategy:
-      (link_id, clicked_at) -> date-range aggregation per link
-      (link_id, country)    -> country breakdown per link
-      (link_id, browser)    -> browser breakdown per link
+      (link_id, clicked_at)  -> historical time-series/date-range queries
+      (link_id, country)     -> country breakdown per link
+      (link_id, browser)     -> browser breakdown per link
+      (link_id, device_type) -> device breakdown per link
 
-    Production note: RANGE partition by clicked_at monthly.
+    Production note:
+      For very high click volume, RANGE partition by clicked_at monthly.
     """
 
     __tablename__ = "clicks"
@@ -39,42 +53,49 @@ class Click(Base):
         nullable=False,
     )
 
-    # Privacy: raw IP never stored, anonymized version only
+    # Privacy: raw IP is never stored. Store anonymized IP only.
+    # IPv4 example: 203.0.113.45 -> 203.0.113.0
     ip_anonymized: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
     )
 
-    # GeoIP, populated by Celery worker on Day 3
+    # Raw User-Agent captured from request headers.
+    # Parsed fields below are populated by the Phase 3 Celery analytics task.
+    user_agent: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    browser: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    os: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    device_type: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+
+    # Referrer captured from Referer/Referrer request header.
+    referrer: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # GeoIP enrichment, populated by Phase 3 Celery analytics task.
     country: Mapped[str | None] = mapped_column(
-        String(64),
+        String(128),
         nullable=True,
     )
 
     city: Mapped[str | None] = mapped_column(
         String(128),
-        nullable=True,
-    )
-
-    # User-agent, populated by Celery worker on Day 3
-    browser: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-    )
-
-    os: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-    )
-
-    device_type: Mapped[str | None] = mapped_column(
-        String(16),
-        nullable=True,
-    )
-
-    # Referrer
-    referrer: Mapped[str | None] = mapped_column(
-        String(2048),
         nullable=True,
     )
 
@@ -88,6 +109,7 @@ class Click(Base):
         Index("ix_clicks_link_time", "link_id", "clicked_at"),
         Index("ix_clicks_link_country", "link_id", "country"),
         Index("ix_clicks_link_browser", "link_id", "browser"),
+        Index("ix_clicks_link_device_type", "link_id", "device_type"),
     )
 
     def __repr__(self) -> str:
