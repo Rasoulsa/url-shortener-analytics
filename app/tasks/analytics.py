@@ -170,7 +170,7 @@ async def _persist_click_event(
 
         if link_id is None:
             logger.warning(
-                "Skipping click analytics persistence; link not found " "for short_code=%s",
+                "Skipping click analytics persistence; link not found for short_code=%s",
                 short_code,
             )
             return {
