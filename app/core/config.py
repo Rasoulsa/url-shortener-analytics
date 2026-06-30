@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     rate_anon_per_min: int = 100
     rate_auth_per_min: int = 1000
 
-    # ── Caching (Day 2) ───────────────────────────────────
+    # ── Caching ───────────────────────────────────
     hot_link_threshold: int = 50
     hot_link_extended_ttl: int = 86400
     default_cache_ttl: int = 3600
