@@ -48,7 +48,31 @@
 | **pre-commit** | ≥3.7 | Git hooks | Enforces quality on every commit |
 | **GitHub Actions** | — | CI/CD | Free, native GitHub integration |
 
-## Frontend (Day 4)
+## Redis
+
+Redis is used for:
+
+- Link metadata cache
+- Click counters
+- Rate-limit state
+- Lightweight analytics counters
+- Celery broker/result backend through separate Redis DBs
+
+Redis DB usage:
+
+| DB | Purpose |
+|---|---|
+| 0 | Application cache/counters/rate limits/analytics |
+| 1 | Celery broker |
+| 2 | Celery result backend |
+
+## Celery
+
+Celery is used for non-blocking background analytics processing.
+
+The redirect path enqueues click events and returns the redirect response without waiting for analytics processing.
+
+## Frontend (Phase 4)
 
 | Tool | Purpose |
 |------|---------|
