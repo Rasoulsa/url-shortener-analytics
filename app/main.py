@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import auth, links, redirect
 from app.core.config import settings
 from app.core.redis_client import redis_client
+from app.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
@@ -25,6 +26,12 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+# ── Middleware ────────────────────────────────────────────────
+# NOTE: Starlette runs middleware in reverse order of registration.
+# Registering RateLimitMiddleware AFTER CORS means CORS runs first
+# (outermost), so 429 responses still get CORS headers.
+app.add_middleware(RateLimitMiddleware)
 
 # CORS (tighten origins in production — Day 4)
 app.add_middleware(

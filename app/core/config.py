@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     rate_anon_per_min: int = 100
     rate_auth_per_min: int = 1000
 
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = 60
+
+    rate_limit_auth_requests: int = 5
+    rate_limit_api_requests: int = 100
+    rate_limit_redirect_requests: int = 60
+
     # ── Caching ───────────────────────────────────
     hot_link_threshold: int = 50
     hot_link_extended_ttl: int = 86400
