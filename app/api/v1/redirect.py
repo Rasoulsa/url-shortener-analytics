@@ -25,6 +25,7 @@ from app.core.database import get_db
 from app.core.redis_client import redis_client
 from app.core.security import verify_password
 from app.models.link import Link
+from app.services.analytics_queue import enqueue_click_event
 from app.services.cache import (
     CachedLink,
     delete_cached_link,
@@ -199,6 +200,7 @@ async def redirect(
             return HTMLResponse(_password_gate_html(short_code))
 
         await _record_click(db, cached.short_code)
+        enqueue_click_event(short_code=cached.short_code, request=request)
 
         return RedirectResponse(
             url=cached.long_url,
@@ -228,6 +230,7 @@ async def redirect(
         return HTMLResponse(_password_gate_html(short_code))
 
     await _record_click(db, cached.short_code)
+    enqueue_click_event(short_code=cached.short_code, request=request)
 
     return RedirectResponse(
         url=cached.long_url,
@@ -241,6 +244,7 @@ async def redirect(
 )
 async def unlock(
     short_code: str,
+    request: Request,
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -279,6 +283,7 @@ async def unlock(
         )
 
     await _record_click(db, cached.short_code)
+    enqueue_click_event(short_code=cached.short_code, request=request)
 
     return RedirectResponse(
         url=cached.long_url,

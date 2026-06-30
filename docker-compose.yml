@@ -74,12 +74,19 @@ services:
       dockerfile: Dockerfile
       target: runtime
     restart: unless-stopped
-    command: celery -A app.tasks.celery_app:celery_app worker --loglevel=info --concurrency=2
-    env_file: .env.dev
+    command: >
+      celery -A app.tasks.celery_app:celery_app
+      worker
+      --loglevel=INFO
+      --concurrency=2
+      --queues=default,analytics
+      --hostname=celery@%h
+    env_file:
+      - .env.dev
     environment:
-      POSTGRES_HOST:        db
-      REDIS_URL:            redis://redis:6379/0
-      CELERY_BROKER_URL:    redis://redis:6379/1
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
     volumes:
       - ./geoip:/data:ro
@@ -88,6 +95,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A app.tasks.celery_app:celery_app inspect ping --timeout=5 | grep -q pong"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   # ── Alembic migrations (run-once) ───────────────────────────────────────────
   migrate:
