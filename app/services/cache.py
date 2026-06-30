@@ -120,6 +120,13 @@ def deserialize_link(raw: str) -> CachedLink:
     )
 
 
+def _decode_redis_value(value: bytes | str) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+
+    return value
+
+
 async def get_cached_link(
     redis: Redis,
     short_code: str,
@@ -129,7 +136,7 @@ async def get_cached_link(
     if not raw:
         return None
 
-    cached = deserialize_link(raw)
+    cached = deserialize_link(_decode_redis_value(raw))
 
     if is_expired(cached.expires_at):
         await delete_cached_link(redis, short_code)
