@@ -107,6 +107,7 @@ class Link(Base):
         "Click",
         back_populates="link",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         lazy="selectin",
     )
 
