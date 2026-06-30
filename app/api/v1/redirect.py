@@ -3,12 +3,15 @@ Redirect endpoint — the hot path of the service.
 
 Day 1: DB-only redirect path.
 Day 2 Branch 1: Redis cache-aside for redirect metadata.
+Day 2 Branch 2: Redis write-through click counters.
 
 This branch adds:
 - Redis lookup before DB lookup
 - TTL-aligned metadata cache
 - Lazy deletion for expired links discovered on cache miss
 - Cache-aware password unlock
+- Redis click counter increments on successful redirects
+- Postgres click-count fallback if Redis counter increment fails
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from app.services.cache import (
     is_expired,
     set_cached_link,
 )
+from app.services.counters import increment_link_click_counter
 
 router = APIRouter(tags=["Redirect"])
 
@@ -47,16 +51,32 @@ def _to_cached_link(link: Link) -> CachedLink:
     )
 
 
+async def _record_click(
+    db: AsyncSession,
+    short_code: str,
+) -> None:
+    """
+    Record a redirect click.
+
+    Day 2 behavior:
+    - Prefer Redis counter increment for fast redirect path.
+    - Fall back to direct Postgres increment if Redis is unavailable.
+    """
+    counter_value = await increment_link_click_counter(redis_client, short_code)
+
+    if counter_value is None:
+        await _increment_click_count(db, short_code)
+
+
 async def _increment_click_count(
     db: AsyncSession,
     short_code: str,
 ) -> None:
     """
-    Temporary Day 2 Branch 1 counter behavior.
+    Fallback direct Postgres click increment.
 
-    This keeps click_count working while cache-aside is introduced.
-    In the next branch, feat/d2-write-through, this DB write will be replaced
-    by Redis INCR and Celery flush.
+    Normal redirect traffic increments Redis counters first. This function is
+    only used if Redis is unavailable or the counter increment fails.
     """
     await db.execute(
         update(Link).where(Link.short_code == short_code).values(click_count=Link.click_count + 1)
@@ -178,7 +198,7 @@ async def redirect(
         if cached.password_hash:
             return HTMLResponse(_password_gate_html(short_code))
 
-        await _increment_click_count(db, cached.short_code)
+        await _record_click(db, cached.short_code)
 
         return RedirectResponse(
             url=cached.long_url,
@@ -207,7 +227,7 @@ async def redirect(
     if cached.password_hash:
         return HTMLResponse(_password_gate_html(short_code))
 
-    await _increment_click_count(db, cached.short_code)
+    await _record_click(db, cached.short_code)
 
     return RedirectResponse(
         url=cached.long_url,
@@ -258,7 +278,7 @@ async def unlock(
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
-    await _increment_click_count(db, cached.short_code)
+    await _record_click(db, cached.short_code)
 
     return RedirectResponse(
         url=cached.long_url,
