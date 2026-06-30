@@ -1,29 +1,91 @@
 """
 Redirect endpoint — the hot path of the service.
 
-Day 1: DB-only (simple, fully working).
-Day 2: Redis cache-aside inserted before DB lookup.
-Day 3: Click recording moved to async Celery task.
+Day 1: DB-only redirect path.
+Day 2 Branch 1: Redis cache-aside for redirect metadata.
 
-TODO markers show exactly where each upgrade slots in.
+This branch adds:
+- Redis lookup before DB lookup
+- TTL-aligned metadata cache
+- Lazy deletion for expired links discovered on cache miss
+- Cache-aware password unlock
 """
 
-from datetime import UTC, datetime
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.redis_client import redis_client
 from app.core.security import verify_password
 from app.models.link import Link
+from app.services.cache import (
+    CachedLink,
+    delete_cached_link,
+    get_cached_link,
+    is_expired,
+    set_cached_link,
+)
 
 router = APIRouter(tags=["Redirect"])
 
 
-def _is_expired(expires_at: datetime | None) -> bool:
-    return expires_at is not None and expires_at < datetime.now(UTC)
+def _redirect_status(is_permanent: bool) -> int:
+    return status.HTTP_301_MOVED_PERMANENTLY if is_permanent else status.HTTP_302_FOUND
+
+
+def _to_cached_link(link: Link) -> CachedLink:
+    return CachedLink(
+        short_code=link.short_code,
+        long_url=str(link.long_url),
+        expires_at=link.expires_at,
+        is_permanent=bool(link.is_permanent),
+        password_hash=link.password_hash,
+    )
+
+
+async def _increment_click_count(
+    db: AsyncSession,
+    short_code: str,
+) -> None:
+    """
+    Temporary Day 2 Branch 1 counter behavior.
+
+    This keeps click_count working while cache-aside is introduced.
+    In the next branch, feat/d2-write-through, this DB write will be replaced
+    by Redis INCR and Celery flush.
+    """
+    await db.execute(
+        update(Link).where(Link.short_code == short_code).values(click_count=Link.click_count + 1)
+    )
+    await db.commit()
+
+
+async def _load_link_from_db(
+    db: AsyncSession,
+    short_code: str,
+) -> Link | None:
+    result = await db.execute(select(Link).where(Link.short_code == short_code))
+    return result.scalar_one_or_none()
+
+
+async def _delete_expired_link(
+    db: AsyncSession,
+    short_code: str,
+    link: Link,
+) -> None:
+    """
+    Lazy deletion.
+
+    Expired links are removed when discovered during redirect lookup instead
+    of by scheduled cron.
+    """
+    await delete_cached_link(redis_client, short_code)
+    await db.delete(link)
+    await db.commit()
 
 
 def _password_gate_html(short_code: str, error: str = "") -> str:
@@ -87,77 +149,118 @@ def _password_gate_html(short_code: str, error: str = "") -> str:
     "/{short_code}",
     summary="Redirect to original URL",
     responses={
-        302: {"description": "Redirect (temporary)"},
-        301: {"description": "Redirect (permanent)"},
+        302: {"description": "Redirect temporary"},
+        301: {"description": "Redirect permanent"},
         404: {"description": "Short code not found"},
         410: {"description": "Link has expired"},
     },
 )
 async def redirect(
     short_code: str,
-    request: Request,  # kept for Day 3 — IP + UA extraction
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    # TODO(Day 2): Redis cache-aside lookup before DB
-    # cached = await cache_service.get(short_code)
-    # if cached: fire_click_task(); return RedirectResponse(cached)
+    """
+    Redirect using Redis cache-aside.
 
-    link = (
-        await db.execute(select(Link).where(Link.short_code == short_code))
-    ).scalar_one_or_none()
+    Flow:
+    1. Try Redis metadata cache.
+    2. If cache hit, redirect or show password gate.
+    3. If cache miss, load from DB.
+    4. If expired, lazily delete and return 410.
+    5. If valid, cache metadata and redirect or show password gate.
+    """
+    _ = request
 
-    if not link:
+    cached = await get_cached_link(redis_client, short_code)
+
+    if cached is not None:
+        if cached.password_hash:
+            return HTMLResponse(_password_gate_html(short_code))
+
+        await _increment_click_count(db, cached.short_code)
+
+        return RedirectResponse(
+            url=cached.long_url,
+            status_code=_redirect_status(cached.is_permanent),
+        )
+
+    link = await _load_link_from_db(db, short_code)
+
+    if link is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"'{short_code}' not found.",
         )
 
-    # Lazy expiry check (no cron needed — checked on access)
-    # TODO(Day 2): also invalidate Redis cache entry here
-    if _is_expired(link.expires_at):
+    if is_expired(link.expires_at):
+        await _delete_expired_link(db, short_code, link)
+
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="This link has expired.",
         )
 
-    if link.password_hash:
+    await set_cached_link(redis_client, link)
+    cached = _to_cached_link(link)
+
+    if cached.password_hash:
         return HTMLResponse(_password_gate_html(short_code))
 
-    # TODO(Day 2): replace with Redis INCR write-through counter
-    # TODO(Day 3): fire record_click.delay(link.id, ip, ua, referrer)
-    link.click_count += 1
-    await db.commit()
+    await _increment_click_count(db, cached.short_code)
 
-    redirect_code = (
-        status.HTTP_301_MOVED_PERMANENTLY if link.is_permanent else status.HTTP_302_FOUND
+    return RedirectResponse(
+        url=cached.long_url,
+        status_code=_redirect_status(cached.is_permanent),
     )
-    return RedirectResponse(url=link.long_url, status_code=redirect_code)
 
 
 @router.post(
     "/{short_code}/unlock",
-    include_in_schema=False,  # internal form endpoint
+    include_in_schema=False,
 )
 async def unlock(
     short_code: str,
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
-    link = (
-        await db.execute(select(Link).where(Link.short_code == short_code))
-    ).scalar_one_or_none()
+    """
+    Unlock password-protected links.
 
-    if not link:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
-    if _is_expired(link.expires_at):
-        raise HTTPException(status.HTTP_410_GONE, "This link has expired")
-    if not link.password_hash or not verify_password(password, link.password_hash):
+    This also uses cache-aside metadata so the protected link flow benefits
+    from Redis after the first lookup.
+    """
+    cached = await get_cached_link(redis_client, short_code)
+
+    if cached is None:
+        link = await _load_link_from_db(db, short_code)
+
+        if link is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Link not found",
+            )
+
+        if is_expired(link.expires_at):
+            await _delete_expired_link(db, short_code, link)
+
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This link has expired",
+            )
+
+        await set_cached_link(redis_client, link)
+        cached = _to_cached_link(link)
+
+    if not cached.password_hash or not verify_password(password, cached.password_hash):
         return HTMLResponse(
             _password_gate_html(short_code, "Incorrect password. Try again."),
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
-    link.click_count += 1
-    await db.commit()
+    await _increment_click_count(db, cached.short_code)
 
-    return RedirectResponse(url=link.long_url, status_code=status.HTTP_302_FOUND)
+    return RedirectResponse(
+        url=cached.long_url,
+        status_code=_redirect_status(cached.is_permanent),
+    )
