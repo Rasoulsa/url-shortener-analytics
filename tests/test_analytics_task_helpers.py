@@ -6,8 +6,8 @@ def test_anonymize_ipv4():
 
 
 def test_anonymize_ipv6():
-    assert anonymize_ip("2001:db8:abcd:1234:1111:2222:3333:4444") == ("2001:db8:abcd:1234::")
+    assert anonymize_ip("2001:db8:abcd:1234:1111:2222:3333:4444") == ("2001:db8:abcd::")
 
 
-def test_anonymize_invalid_ip():
+def test_anonymize_invalid():
     assert anonymize_ip("not-an-ip") is None
