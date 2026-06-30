@@ -25,6 +25,8 @@ celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     result_expires=settings.celery_result_expires_seconds,
     worker_prefetch_multiplier=1,
+    task_default_queue="default",
+    task_create_missing_queues=True,
     task_routes={
         "health.*": {"queue": "default"},
         "analytics.*": {"queue": "analytics"},
