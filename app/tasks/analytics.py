@@ -23,13 +23,12 @@ from app.tasks.celery_app import celery_app
 
 logger = get_task_logger(__name__)
 
-
 T = TypeVar("T")
 
 _worker_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _run_async(coro: Coroutine[Any, Any, T]) -> T:
+def _run_async(coro: Coroutine[Any, Any, T]) -> T:  # noqa: UP047
     """
     Run async DB code from a synchronous Celery task.
 
