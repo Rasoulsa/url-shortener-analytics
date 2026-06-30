@@ -22,8 +22,15 @@ class Settings(BaseSettings):
 
     # ── Redis ─────────────────────────────────────────────
     redis_url: str = "redis://redis:6379/0"
+
+    # ── Celery ─────────────────────────────────────
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
+    celery_task_always_eager: bool = False
+    celery_result_expires_seconds: int = 3600
+
+    # ── Analytics Queue ───────────────────────────────────────
+    analytics_queue_enabled: bool = True
 
     # ── Rate limiting ─────────────────────────────────────
     rate_anon_per_min: int = 100
