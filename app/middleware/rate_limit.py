@@ -8,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.envelope import error_body
 from app.core.redis_client import redis_client
 from app.services.rate_limiter import check_rate_limit
 
@@ -40,20 +41,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not result.allowed:
             return JSONResponse(
                 status_code=429,
-                content={
-                    "data": None,
-                    "meta": {
+                content=error_body(
+                    code="rate_limit_exceeded",
+                    message="Too many requests. Please try again later.",
+                    meta={
                         "limit": result.limit,
                         "remaining": result.remaining,
                         "retry_after_seconds": result.retry_after_seconds,
                     },
-                    "errors": [
-                        {
-                            "code": "rate_limit_exceeded",
-                            "message": ("Too many requests. Please try again later."),
-                        }
-                    ],
-                },
+                ),
                 headers={
                     "Retry-After": str(result.retry_after_seconds),
                     "X-RateLimit-Limit": str(result.limit),

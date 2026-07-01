@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,9 +41,3 @@ class BreakdownItem(BaseModel):
     label: str
     clicks: int
     percentage: float
-
-
-class AnalyticsEnvelope(BaseModel):
-    data: Any
-    meta: dict[str, Any] = Field(default_factory=dict)
-    errors: list[dict[str, Any]] = Field(default_factory=list)
