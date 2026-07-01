@@ -11,6 +11,7 @@ celery_app = Celery(
     include=[
         "app.tasks.health",
         "app.tasks.analytics",
+        "app.tasks.webhooks",
     ],
 )
 

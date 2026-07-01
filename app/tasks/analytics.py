@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 from celery.utils.log import get_task_logger
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
@@ -24,6 +24,7 @@ from app.services.counters import (
 from app.services.geoip import lookup_geoip
 from app.services.privacy import anonymize_ip
 from app.services.user_agent import parse_user_agent
+from app.services.webhooks import WebhookDispatch, build_click_threshold_payload
 from app.tasks.celery_app import celery_app
 
 logger = get_task_logger(__name__)
@@ -303,31 +304,94 @@ def _redis_value_to_int(value: Any) -> int | None:
         return None
 
 
+def _enqueue_webhook_dispatch(dispatch: WebhookDispatch) -> None:
+    """
+    Enqueue webhook delivery after the database transaction commits.
+
+    Import inside the function to avoid Celery task import cycles.
+    """
+    from app.tasks.webhooks import send_webhook_event
+
+    payload = build_click_threshold_payload(dispatch)
+
+    send_webhook_event.apply_async(
+        kwargs={
+            "webhook_url": dispatch.webhook_url,
+            "payload": payload,
+        },
+    )
+
+
 async def _increment_link_click_count_by(
     *,
     short_code: str,
     count: int,
-) -> bool:
+) -> dict[str, Any]:
     """
     Increment links.click_count by a flushed Redis counter value.
 
-    Returns False when the link no longer exists.
+    Also detects click-threshold webhook crossing in the same DB transaction.
+
+    Returns:
+        {
+            "updated": bool,
+            "webhook_dispatch": WebhookDispatch | None,
+        }
+
+    Idempotency:
+    - A webhook only fires when webhook_fired is false.
+    - The row is locked with SELECT ... FOR UPDATE.
+    - webhook_fired is set true before commit.
     """
     async with SessionLocal() as db:
         result = await db.execute(
-            select(Link.id).where(Link.short_code == short_code),
+            select(Link).where(Link.short_code == short_code).with_for_update(),
         )
-        link_id = result.scalar_one_or_none()
+        link = result.scalar_one_or_none()
 
-        if link_id is None:
-            return False
+        if link is None:
+            return {
+                "updated": False,
+                "webhook_dispatch": None,
+            }
 
-        await db.execute(
-            update(Link).where(Link.id == link_id).values(click_count=Link.click_count + count),
-        )
+        old_click_count = link.click_count or 0
+        new_click_count = old_click_count + count
+
+        link.click_count = new_click_count
+
+        webhook_dispatch: WebhookDispatch | None = None
+
+        if (
+            link.webhook_url
+            and link.webhook_threshold is not None
+            and not link.webhook_fired
+            and old_click_count < link.webhook_threshold <= new_click_count
+        ):
+            fired_at = datetime.now(UTC)
+            threshold = int(link.webhook_threshold)
+
+            link.webhook_fired = True
+            link.webhook_fired_at = fired_at
+
+            webhook_dispatch = WebhookDispatch(
+                link_id=link.id,
+                short_code=link.short_code,
+                long_url=link.long_url,
+                click_count=new_click_count,
+                webhook_threshold=threshold,
+                webhook_url=link.webhook_url,
+                event_id=f"link.threshold.{link.id}.{threshold}",
+                event_type="link.click_threshold_reached",
+                occurred_at=fired_at.isoformat().replace("+00:00", "Z"),
+            )
+
         await db.commit()
 
-        return True
+        return {
+            "updated": True,
+            "webhook_dispatch": webhook_dispatch,
+        }
 
 
 def _get_pending_click_counter_short_codes(redis: Redis) -> list[str]:
@@ -381,6 +445,7 @@ def _flush_single_click_counter(
             "flushed": False,
             "count": 0,
             "reason": "counter_missing",
+            "webhook_enqueued": False,
         }
 
     count = _redis_value_to_int(raw_count)
@@ -393,10 +458,11 @@ def _flush_single_click_counter(
             "flushed": False,
             "count": 0,
             "reason": "invalid_counter_value",
+            "webhook_enqueued": False,
         }
 
     try:
-        updated = _run_async(
+        update_result = _run_async(
             _increment_link_click_count_by(
                 short_code=short_code,
                 count=count,
@@ -410,6 +476,14 @@ def _flush_single_click_counter(
         )
         raise
 
+    if isinstance(update_result, bool):
+        # Backward-compatible path for older tests/mocks.
+        updated = update_result
+        webhook_dispatch = None
+    else:
+        updated = bool(update_result["updated"])
+        webhook_dispatch = update_result["webhook_dispatch"]
+
     if not updated:
         logger.warning(
             "Skipping click counter flush; link not found for short_code=%s",
@@ -422,7 +496,14 @@ def _flush_single_click_counter(
             "flushed": False,
             "count": count,
             "reason": "link_not_found",
+            "webhook_enqueued": False,
         }
+
+    webhook_enqueued = False
+
+    if webhook_dispatch is not None:
+        _enqueue_webhook_dispatch(webhook_dispatch)
+        webhook_enqueued = True
 
     if redis.exists(counter_key):
         redis.sadd(PENDING_CLICK_COUNTER_SET_KEY, short_code)
@@ -434,6 +515,7 @@ def _flush_single_click_counter(
         "flushed": True,
         "count": count,
         "reason": None,
+        "webhook_enqueued": webhook_enqueued,
     }
 
 
@@ -444,6 +526,9 @@ def _flush_pending_click_counters(redis: Redis | None = None) -> dict[str, Any]:
     Uses Redis GETDEL so normal successful flushes do not double count.
     If the database update fails, the removed counter value is restored and the
     task is allowed to retry.
+
+    Also enqueues click-threshold webhooks when a link crosses its configured
+    webhook_threshold.
     """
     redis_client = redis or _sync_redis_client()
     short_codes = _get_pending_click_counter_short_codes(redis_client)
@@ -451,6 +536,7 @@ def _flush_pending_click_counters(redis: Redis | None = None) -> dict[str, Any]:
     flushed_links = 0
     flushed_clicks = 0
     skipped = 0
+    webhooks_enqueued = 0
     results: list[dict[str, Any]] = []
 
     for short_code in short_codes:
@@ -466,11 +552,15 @@ def _flush_pending_click_counters(redis: Redis | None = None) -> dict[str, Any]:
         else:
             skipped += 1
 
+        if result.get("webhook_enqueued"):
+            webhooks_enqueued += 1
+
     return {
         "processed_short_codes": len(short_codes),
         "flushed_links": flushed_links,
         "flushed_clicks": flushed_clicks,
         "skipped": skipped,
+        "webhooks_enqueued": webhooks_enqueued,
         "results": results,
     }
 
@@ -493,10 +583,11 @@ def flush_click_counters(_self: Any) -> dict[str, Any]:
     result = _flush_pending_click_counters()
 
     logger.info(
-        "Flushed Phase 3 click counters: links=%s clicks=%s skipped=%s",
+        "Flushed Phase 3 click counters: links=%s clicks=%s skipped=%s webhooks=%s",
         result["flushed_links"],
         result["flushed_clicks"],
         result["skipped"],
+        result["webhooks_enqueued"],
     )
 
     return result
