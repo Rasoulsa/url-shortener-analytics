@@ -32,12 +32,41 @@ class AnalyticsOverview(BaseModel):
     last_click_at: datetime | None = None
 
 
-class TimeSeriesPoint(BaseModel):
-    date: str
-    clicks: int
-
-
 class BreakdownItem(BaseModel):
     label: str
     clicks: int
     percentage: float
+
+
+class TimeSeriesPoint(BaseModel):
+    date: str  # ISO date "2026-07-02"
+    clicks: int
+
+
+class TimeseriesOut(BaseModel):
+    short_code: str
+    period_days: int
+    total: int
+    points: list[TimeSeriesPoint]
+
+
+class CountBucket(BaseModel):
+    label: str
+    count: int
+
+
+class BreakdownOut(BaseModel):
+    short_code: str
+    total: int
+    items: list[CountBucket]
+
+
+class CompareSeries(BaseModel):
+    short_code: str
+    total: int
+    points: list[TimeSeriesPoint]
+
+
+class CompareOut(BaseModel):
+    period_days: int
+    series: list[CompareSeries]
