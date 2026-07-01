@@ -91,3 +91,19 @@ schedules tasks, it doesn't execute them; execution happens in `worker`.
 
 Also planned for Phase 4: optional webhook firing when a link's click count
 crosses a configured threshold (not yet implemented as of Phase 3).
+
+## Webhooks
+
+| Tool | Version | Purpose | Why chosen |
+|------|---------|---------|------------|
+| **httpx** | ≥0.27 | Async HTTP client for webhook delivery | Native asyncio support, connection pooling, matches async stack |
+| **hmac / hashlib** (stdlib) | — | Webhook payload signing | No extra dependency; standard HMAC-SHA256 receiver verification pattern |
+| **secrets** (stdlib) | — | Per-webhook signing secret generation | Already used for API keys/short codes; cryptographically secure |
+
+Webhook delivery runs as a Celery task (`webhooks.deliver_webhook`) on the existing
+`worker` service — no new container required. Delivery is triggered from the
+Phase 3 counter-flush task at the moment a link's persisted `click_count`
+crosses a configured threshold.
+Add to the Developer Tooling table (dev-only dependency for tests):
+
+| **respx** | ≥0.21 | Mock httpx in tests | Needed to test webhook delivery without real HTTP calls |
