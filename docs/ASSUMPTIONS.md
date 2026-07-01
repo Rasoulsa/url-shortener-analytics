@@ -7,9 +7,13 @@
 
 - **Single region:** Designed for single-region deployment. Multi-region would require distributed cache strategy and DB replication.
 
-- **PostgreSQL source of truth:** PostgreSQL is the authoritative storage layer for users, links, ownership, custom aliases, expiration, and password protection.
+- **PostgreSQL source of truth:** PostgreSQL is the authoritative storage layer
+  for users, links, ownership, custom aliases, expiration, password protection,
+  and durable click events.
 
-- **Redis performance layer:** Redis is treated as a performance and coordination layer, not the source of truth. Redis can be cleared or restarted without corrupting authoritative link/user data.
+- **Redis performance layer:** Redis is treated as a performance and
+  coordination layer, not the source of truth. Redis can be cleared or
+  restarted without corrupting authoritative link, user, or click data.
 
 - **Redis cache fallback:** If the Redis metadata cache is unavailable, redirects should fall back to PostgreSQL lookup.
 
@@ -19,38 +23,77 @@
 
 - **Celery availability:** If the Celery broker or worker is unavailable, redirects should still succeed. Analytics tasks may be delayed or skipped, but redirect correctness must not depend on Celery.
 
-- **Analytics consistency:** Analytics processing is eventually consistent. Redirect latency should not depend on analytics enrichment, GeoIP lookup, user-agent parsing, or future webhook processing.
+- **Analytics consistency:** Analytics processing is eventually consistent.
+  Redirect latency does not depend on analytics enrichment, GeoIP lookup,
+  User-Agent parsing, or webhook processing. Counter flushes to PostgreSQL
+  happen every ~30 seconds via Celery Beat.
 
-- **GeoIP optional:** System works fully without the MaxMind database. Country/city fields will be NULL. See `GEOIP_SETUP.md`.
+- **GeoIP optional:** System works fully without the MaxMind database.
+  `country`/`city` fields will be NULL. GeoIP lookup fails open — missing
+  database, missing package, or invalid IPs all return empty values.
+  See [GEOIP_SETUP.md](GEOIP_SETUP.md).
+
+- **GeoIP lookup uses raw IP:** The raw client IP is used for GeoIP lookup
+  accuracy. Only the anonymized IP is persisted. The raw IP is never written
+  to PostgreSQL or Redis.
 
 - **IP privacy:** IPv4 last octet zeroed before storage (`203.0.113.45 → 203.0.113.0`). Common GDPR-friendly approach.
 
 - **Custom alias safety:** Checked in DB + reserved via `SETNX`. In extreme race conditions, PostgreSQL `UNIQUE` constraint is the final safety net.
 
-## Day 2 Infrastructure Assumptions
+- **Click counter flush safety:** The flush task uses Redis `GETDEL` so
+  successful flushes never double-count. If the database update fails after
+  `GETDEL`, the counter value is restored and the task retries with
+  exponential backoff.
+## Infrastructure Assumptions
 
-- PostgreSQL is the source of truth for users and links.
-- Redis is treated as a performance and coordination layer.
+- PostgreSQL is the source of truth for users, links, and click events.
 - Redis DB 0 is used for API cache, click counters, rate-limit keys, and analytics counters.
 - Redis DB 1 is used as the Celery broker.
 - Redis DB 2 is used as the Celery result backend.
-- If Redis cache is unavailable, redirects should fall back to PostgreSQL.
-- If Redis click counters are unavailable, click increments should fall back to PostgreSQL.
+- If Redis cache is unavailable, redirects fall back to PostgreSQL.
+- If Redis click counters are unavailable, click increments fall back to PostgreSQL.
 - If Redis rate limiting is unavailable, the system fails open to preserve availability.
-- If Celery broker or worker is unavailable, redirects should still succeed.
+- If the Celery broker or worker is unavailable, redirects still succeed.
 - Analytics processing is eventually consistent.
+- GeoIP city coverage depends on MaxMind data quality. Infrastructure and CDN
+  IPs (e.g. `8.8.8.8`, `1.1.1.1`) often return country only with no city.
+  This is a data coverage limitation, not a bug.
 
 ## Limitations
 
 | Limitation | Reason | Future Fix |
-|------------|---------|------------|
-| clicks table not partitioned | Out of scope | RANGE partition by clicked_at monthly |
-| No JWT / OAuth | Scope | Add refresh tokens + OAuth providers |
+|---|---|---|
+| `clicks` table not partitioned | Out of scope for Phase 3 | `RANGE` partition by `clicked_at` monthly |
+| GeoIP city missing for some IPs | MaxMind data coverage | No fix — infrastructure IPs are expected to lack city data |
+| Webhooks on click thresholds not implemented | Future work | Fire on `links.click_count` threshold crossing |
+| Analytics dashboard not implemented | Phase 4 | Chart.js UI over stats API |
+| No JWT / OAuth | Scope | Add refresh tokens + OAuth2 providers |
 | No email verification | Scope | Add verification + confirmation flow |
-| Redis counters not durably flushed yet | Day 2 scope | Add periodic Celery flush to PostgreSQL |
-| Analytics enrichment is minimal | Day 2 scope | Add GeoIP, UA parsing, and time-series aggregation |
-| No soft delete | Scope | Add deleted_at tombstone column |
+| No soft delete | Scope | Add `deleted_at` tombstone column |
 | Single region | Scope | Redis Cluster + read replicas |
+
+## Failure Behavior
+
+```text
+┌────────────────────────────────────┬──────────────────────────────────────────────┐
+│ Failure                            │ Behavior                                     │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ Redis metadata cache unavailable   │ Fall back to PostgreSQL lookup               │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ Redis click counter unavailable    │ Fall back to PostgreSQL click increment      │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ Redis rate limiter unavailable     │ Fail open and allow request                  │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ Celery broker unavailable          │ Log warning; redirect still succeeds         │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ Celery worker unavailable          │ Tasks may queue; redirect still succeeds     │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ GeoIP database missing             │ Click stored with country/city = NULL        │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ PostgreSQL unavailable             │ API management and cache misses fail normally│
+└────────────────────────────────────┴──────────────────────────────────────────────┘
+```
 
 ## Additional Considerations
 
@@ -60,11 +103,27 @@ Redis `INCR` is used as a fast write-through counter to reduce PostgreSQL write 
 
 The redirect path should prefer Redis for click increments. If Redis is unavailable, PostgreSQL is used as a fallback so the request can still be counted.
 
-**Future improvement:**
+Phase 3 completes the flush loop:
 
-- Periodic Celery job flushes Redis counters into PostgreSQL.
-- PostgreSQL stores durable aggregate counts.
-- Redirect path remains fast and avoids synchronous database writes where possible.
+- Redirect path: `INCR link:{short_code}:clicks` in Redis
+- Celery Beat (~30s): `GETDEL` counter → `UPDATE links SET click_count = click_count + N`
+- `GETDEL` is atomic — successful flushes never double-count
+- On DB failure: counter value is restored and task retries (max 3, exponential backoff)
+
+### Analytics Pipeline
+
+Phase 3 adds full click enrichment via an async Celery task:
+
+1. Redirect enqueues `analytics.process_click_event` immediately and returns
+2. Worker parses User-Agent → `browser`, `os`, `device_type`
+3. Worker performs GeoIP lookup on the ***raw IP*** → `country`, `city`
+4. Worker anonymizes IP → `ip_anonymized` (last octet zeroed)
+5. Worker inserts one enriched `clicks` row in PostgreSQL
+6. Worker updates lightweight Redis analytics counters
+
+The raw IP is used only during step 3 for lookup accuracy and is never
+persisted anywhere.
+
 
 ### Cache-Aside Metadata
 
@@ -115,8 +174,8 @@ Monthly RANGE partitions allow old data to be archived or dropped without affect
 
 ### MaxMind GeoLite2 License
 
-Free but requires registration. Cannot be redistributed.
+Free but requires registration at `maxmind.com`. Cannot be redistributed.
 
-`geoip/` is `.gitignored`.
+`geoip/*.mmdb` is `.gitignored`.
 
-Instructions are provided in `docs/GEOIP_SETUP.md`.
+Full setup instructions → [GEOIP_SETUP.md](GEOIP_SETUP.md)

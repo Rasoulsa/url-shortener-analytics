@@ -30,6 +30,9 @@ Create local environment file:
 cp .env.example .env.dev
 ```
 
+If you plan to test GeoIP enrichment locally, see [GEOIP_SETUP.md](GEOIP_SETUP.md)
+— it's optional and everything else works without it.
+
 ---
 
 ## Run with Docker
@@ -52,6 +55,10 @@ Run migrations:
 docker compose run --rm migrate
 ```
 
+> If `migrate` isn't defined as its own service, run migrations directly
+> against the `api` container instead — see
+> [Migration troubleshooting](#migration-troubleshooting) below.
+
 View logs:
 
 ```bash
@@ -62,6 +69,12 @@ View worker logs:
 
 ```bash
 docker compose logs -f worker
+```
+
+View beat (scheduler) logs:
+
+```bash
+docker compose logs -f beat
 ```
 
 Stop:
@@ -111,6 +124,18 @@ Run shortener tests:
 uv run pytest tests/test_shortener.py -v
 ```
 
+Run analytics tests:
+
+```bash
+uv run pytest tests/test_analytics.py -v
+```
+
+Run inside Docker instead of locally:
+
+```bash
+docker compose exec api uv run pytest
+```
+
 ---
 
 ## Code Quality
@@ -147,6 +172,47 @@ Do not commit real secrets.
 
 ---
 
+## Migration Troubleshooting
+
+Alembic has two invocation styles depending on where you're running it. Both
+have caused real issues locally — use these workarounds.
+
+**`uv run alembic` inside the container fails with a permission error:**
+```text
+PermissionError: [Errno 13] Permission denied: '/home/appuser/.cache/uv'
+```
+The container's non-root user can't write `uv`'s cache directory. Skip `uv run`
+and call `alembic` directly instead:
+```bash
+docker compose exec api alembic upgrade head
+```
+
+**`DuplicateTable` error on `clicks` (or any table):**
+```text
+sqlalchemy.exc.ProgrammingError: relation "clicks" already exists
+```
+This means a table was created outside of, or ahead of, Alembic's tracked
+revision history (e.g. an earlier partial migration run). Check current state
+and revision history before retrying:
+```bash
+docker compose exec api alembic current
+docker compose exec api alembic history
+```
+If the table genuinely already matches the target schema, stamp the revision
+without re-running the DDL:
+```bash
+docker compose exec api alembic stamp <revision_id>
+```
+Then continue with `alembic upgrade head` for any remaining revisions.
+
+**Missing table during upgrade (e.g. `relation "clicks" does not exist`):**
+Usually means migrations are being applied out of order — a later migration
+(e.g. adding enrichment columns) ran before the migration that creates the
+base table. Check `docker compose exec api alembic history` for the correct
+order and re-run from the earliest missing revision.
+
+---
+
 ## Phase 2 Redis/Celery Validation
 
 Phase 2 adds Redis caching, Redis counters, Redis-backed rate limiting, and Celery
@@ -155,21 +221,27 @@ workers. Use the commands below to validate the local Docker setup.
 ---
 
 ### Check containers
-```bashe
+```bash
 docker compose ps
 ```
 Expected:
 ```text
 api      healthy
+beat     running
 db       healthy
 redis    healthy
 worker   healthy
 ```
 
+> `beat` (the Celery scheduler, added in Phase 3) typically shows as `running`
+> rather than `healthy` — it has no meaningful healthcheck of its own since it
+> only dispatches scheduled tasks to the worker.
+
 If one service is unhealthy, inspect logs:
 ```bash
 docker compose logs -f api
 docker compose logs -f worker
+docker compose logs -f beat
 docker compose logs -f redis
 docker compose logs -f db
 ```
@@ -364,6 +436,7 @@ docker compose exec worker celery -A app.tasks.celery_app:celery_app inspect reg
 Expected tasks:
 ```text
 analytics.process_click_event
+analytics.flush_click_counters
 health.ping
 ```
 
@@ -426,13 +499,13 @@ DB 2 contains result backend keys after task execution.
 
 ### Important worker healthcheck note
 
-The Celery worker does not run an HTTP server.
+The Celery worker (and beat) does not run an HTTP server.
 
 This is valid for the API:
 ```bash
 curl http://localhost:8001/health
 ```
-This is not valid for the worker:
+This is **not** valid for the worker or beat, and will hang / fail to connect:
 ```bash
 curl http://worker:8000
 ```
@@ -482,7 +555,7 @@ docker compose exec redis redis-cli info keyspace
 
 Open Postgres shell:
 ```bash
-docker compose exec db psql -U postgres -d url_shortener
+docker compose exec db psql -U postgres -d urlshort
 ```
 
 Check link row:
@@ -517,3 +590,188 @@ Exit Postgres:
 | Celery broker unavailable | Log warning; redirect still succeeds |
 | Celery worker unavailable | Tasks may queue; redirect still succeeds |
 | PostgreSQL unavailable | API management and cache misses fail normally |
+
+---
+
+## Phase 3 Analytics Validation
+
+Phase 3 adds click enrichment (GeoIP + User-Agent), durable counter flushing via
+Celery Beat, and a stats API. Use the commands below to validate the pipeline
+end to end.
+
+---
+
+### Check the clicks table exists
+
+```bash
+docker compose exec db psql -U postgres -d urlshort -c "\d clicks"
+```
+Expected columns:
+```text
+id, link_id, clicked_at, ip_anonymized, country, city,
+browser, os, device_type, referrer, user_agent
+```
+
+If the table is missing or migrations are out of order, see
+[Migration troubleshooting](#migration-troubleshooting) above.
+
+---
+
+### Verify GeoIP database is mounted (optional)
+
+```bash
+docker compose exec worker ls -la /data/
+```
+Expected:
+```text
+GeoLite2-City.mmdb
+```
+
+If the file is absent, GeoIP lookups fail open — clicks still record, but
+`country`/`city` are NULL. This is expected and documented in
+[GEOIP_SETUP.md](GEOIP_SETUP.md).
+
+Test GeoIP lookup directly against known IPs:
+```bash
+docker compose exec -T worker python - <<'PY'
+from app.services.geoip import lookup_geoip
+for ip in ["8.8.8.8", "1.1.1.1", "81.2.69.142", "127.0.0.1"]:
+    print(ip, lookup_geoip(ip))
+PY
+```
+Expected:
+```text
+8.8.8.8     country only (Google infra IP, no city in GeoLite2)
+1.1.1.1     country only (Cloudflare infra IP, no city in GeoLite2)
+81.2.69.142 country=United Kingdom, city=London (known MaxMind test IP)
+127.0.0.1   empty (private/local IP, never resolves)
+```
+
+---
+
+### Test full click enrichment
+
+Create a fresh alias and trigger a redirect with a spoofed public IP,
+realistic User-Agent, and referrer:
+```bash
+ALIAS="analytics$(date +%s)"
+
+curl -i -X POST \
+  'http://localhost:8001/api/v1/links' \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: $API_KEY" \
+  -d "{
+    \"long_url\": \"https://example.com/analytics-test\",
+    \"custom_alias\": \"${ALIAS}\"
+  }"
+
+curl -i \
+  -H "X-Forwarded-For: 81.2.69.142" \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36" \
+  -H "Referer: https://google.com" \
+  "http://localhost:8001/${ALIAS}"
+```
+
+Give the worker a second to process, then check the enriched row:
+```bash
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT ip_anonymized, country, city, browser, os, device_type, referrer
+ FROM clicks c
+ JOIN links l ON l.id = c.link_id
+ WHERE l.short_code = '${ALIAS}'
+ ORDER BY clicked_at DESC LIMIT 1;"
+```
+Expected:
+```text
+ip_anonymized | country        | city   | browser | os      | device_type | referrer
+81.2.69.0     | United Kingdom | London | Chrome  | Windows | desktop     | https://google.com
+```
+
+> **Note:** the stored IP is anonymized (`81.2.69.0`) even though GeoIP looked
+> up the raw `81.2.69.142` — see the Privacy section of
+> [GEOIP_SETUP.md](GEOIP_SETUP.md) for why.
+
+If `country`, `city`, `browser`, `os`, or `referrer` are empty for **all**
+recent rows, check:
+- Is the GeoIP database mounted? (see above)
+- Was the request made with `curl -I` (HEAD)? HEAD requests may not trigger
+  full click recording — use `GET`.
+- Is `analytics.process_click_event` actually registered and being consumed?
+  (see Celery registered tasks check in the Phase 2 section)
+
+---
+
+### Test counter flush (Celery Beat)
+
+Confirm the flush task is registered:
+```bash
+docker compose exec worker celery -A app.tasks.celery_app:celery_app inspect registered
+```
+Expected to include:
+```text
+analytics.flush_click_counters
+```
+
+Confirm beat is scheduling it:
+```bash
+docker compose logs -f beat | grep flush_click_counters
+```
+Expected roughly every 30 seconds:
+```text
+Scheduler: Sending due task flush-click-counters (analytics.flush_click_counters)
+```
+
+Manually verify the counter drains from Redis to Postgres:
+```bash
+# Note the Redis counter value
+docker compose exec redis redis-cli -n 0 get "link:${ALIAS}:clicks"
+
+# Wait ~30s for the beat schedule to fire, then check Postgres
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT short_code, click_count FROM links WHERE short_code = '${ALIAS}';"
+```
+Expected: `links.click_count` matches (or exceeds, if more clicks happened) the
+Redis counter value, and the Redis key is cleared or reset after the flush.
+
+---
+
+### Test the stats API
+
+```bash
+curl -s "http://localhost:8001/api/v1/analytics/links/${ALIAS}/overview" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+
+curl -s "http://localhost:8001/api/v1/analytics/links/${ALIAS}/timeseries?days=7" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+
+curl -s "http://localhost:8001/api/v1/analytics/links/${ALIAS}/breakdown?dimension=country" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+
+curl -s "http://localhost:8001/api/v1/analytics/overview" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+Expected: `{data, meta, errors}` envelopes with `meta.from`/`meta.to` reflecting
+the requested date range, and `breakdown` accepting
+`dimension=country|city|browser|os|device_type|referrer`.
+
+---
+
+### Run the full test suite
+
+```bash
+docker compose exec api uv run pytest -v
+```
+Expected: all tests passing (54 at last count, growing as Phase 3 test
+coverage is added).
+
+---
+
+### Phase 3 expected failure behavior
+
+| Component failure | Expected behavior |
+|---|---|
+| GeoIP database file missing | Click still recorded; `country`/`city` are NULL; worker logs a warning once |
+| `geoip2` package missing | Same as above — fails open, no crash |
+| Redis counter flush fails (DB down) | Counter value restored to Redis; task retries with backoff; no clicks lost |
+| Celery Beat unavailable | Redis counters keep accumulating but stop flushing to Postgres; `links.click_count` becomes stale until beat recovers |
+| Stats API queries fail | Returns standard `{errors}` envelope; redirect and click recording are unaffected (stats reads are decoupled from the write path) |

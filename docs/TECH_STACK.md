@@ -7,7 +7,7 @@
 | **FastAPI** | ≥0.111 | Web framework | Async-native, type-driven, auto Swagger/OpenAPI |
 | **PostgreSQL** | 16 | Primary database | ACID, composite indexes, reliable, widely supported |
 | **Redis** | 7 | Cache / counters / rate-limit / SETNX | Sub-ms latency, atomic operations |
-| **Celery** | ≥5.4 | Async task queue | Non-blocking analytics, retry/backoff built-in |
+| **Celery** | ≥5.4 | Async task queue + periodic scheduler (Beat) | Non-blocking analytics, retry/backoff built-in, Beat handles scheduled counter flushing |
 | **SQLAlchemy** | ≥2.0 | Async ORM | Modern typed `mapped_column`, async engine |
 | **Alembic** | ≥1.13 | DB migrations | Autogenerate, versioned, rollback support |
 | **Pydantic v2** | ≥2.7 | Validation + settings | Fast, typed, `pydantic-settings` for env config |
@@ -17,8 +17,8 @@
 
 | Tool | Version | Purpose | Why chosen |
 |------|---------|---------|------------|
-| **geoip2** | ≥4.8 | IP → country/city | Offline (MaxMind file), no external API dependency |
-| **user-agents** | ≥2.2 | UA string parsing | Browser, OS, device type extraction |
+| **geoip2** | ≥4.8 | IP → country/city | Offline (MaxMind file), no external API dependency; fails open (returns empty country/city) if the database file or package is unavailable, so it's never a hard dependency |
+| **user-agents** | ≥2.2 | UA string parsing | Browser, OS, and device-type (desktop/mobile/tablet) extraction |
 
 ## Security
 
@@ -32,9 +32,9 @@
 | Tool | Purpose | Why chosen |
 |------|---------|------------|
 | **Docker** | Containerization | Reproducible environments everywhere |
-| **Docker Compose** | Local orchestration | One-command dev stack |
+| **Docker Compose** | Local orchestration (`api`, `worker`, `beat`, `db`, `redis`) | One-command dev stack |
 | **Uvicorn** | ASGI server (dev) | Fast, supports `--reload` |
-| **Gunicorn** | Process manager (prod, Day 4) | Worker management, battle-tested |
+| **Gunicorn** | Process manager (prod, Phase 4) | Worker management, battle-tested |
 
 ## Developer Tooling
 
@@ -53,7 +53,7 @@
 Redis is used for:
 
 - Link metadata cache
-- Click counters
+- Click counters (write-through buffer, drained by Celery Beat)
 - Rate-limit state
 - Lightweight analytics counters
 - Celery broker/result backend through separate Redis DBs
@@ -68,13 +68,26 @@ Redis DB usage:
 
 ## Celery
 
-Celery is used for non-blocking background analytics processing.
+Celery handles two kinds of non-blocking background work:
 
-The redirect path enqueues click events and returns the redirect response without waiting for analytics processing.
+- **`analytics.process_click_event`** — enriches each click (GeoIP lookup,
+  User-Agent parsing, IP anonymization) and persists it to the PostgreSQL
+  `clicks` table. Triggered per-request; the redirect path enqueues the event
+  and returns the response without waiting for it.
+- **`analytics.flush_click_counters`** — scheduled by **Celery Beat** every
+  ~30 seconds. Atomically drains (`GETDEL`) Redis click counters into
+  `links.click_count` in PostgreSQL. On failure, the counter value is restored
+  to Redis and the task retries with backoff, so counts are never lost.
+
+Celery Beat runs as its own `beat` service in Docker Compose — it only
+schedules tasks, it doesn't execute them; execution happens in `worker`.
 
 ## Frontend (Phase 4)
 
 | Tool | Purpose |
 |------|---------|
-| **Chart.js** | Analytics dashboard charts |
+| **Chart.js** | Analytics dashboard charts (time-series, country/browser/device breakdowns) |
 | **Jinja2** | Server-side HTML templating |
+
+Also planned for Phase 4: optional webhook firing when a link's click count
+crosses a configured threshold (not yet implemented as of Phase 3).

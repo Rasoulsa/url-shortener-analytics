@@ -56,8 +56,8 @@ A service that shortens, redirects, and analyzes:
 - [x] Sliding-window rate limiting
 - [x] Celery worker scaffold with Redis broker/result backend
 - [x] Separate Redis logical DBs for app keys, Celery broker, and Celery results
-- [ ] Full async GeoIP + UA analytics pipeline *(Phase 3)*
-- [ ] Time-series stats API *(Phase 3)*
+- [x] Full async GeoIP + UA analytics pipeline *(Phase 3)*
+- [x] Time-series stats API *(Phase 3)*
 - [ ] Webhooks on click thresholds *(Phase 3/future)*
 - [ ] Analytics dashboard *(Phase 4)*
 
@@ -129,32 +129,32 @@ That is sufficient for Phase 1 while keeping URLs compact.
 ## 3. Architecture
 
 ```text
-              ┌──────────────────────────────────────────────┐
+              ┌───────────────────────────────────────────-───┐
   Client ───▶ │  FastAPI Application                          │
               │                                               │
-              │  /api/v1/auth      Registration + API key    │
+              │  /api/v1/auth      Registration + API key     │
               │  /api/v1/links     CRUD + pagination          │
-              │  /api/v1/analytics Time-series stats (Day 3) │
+              │  /api/v1/analytics Time-series stats          │
               │  /{short_code}     Redirect (hot path)        │
               │  /dashboard        Chart.js UI (Day 4)        │
               │  /health           System status              │
-              └──────────────┬──────────────────┬────────────┘
+              └──────────────┬──────────────────┬────────-────┘
                              │                  │
-                 ┌───────────▼───────┐  ┌───────▼────────────┐
+                 ┌───────────▼───────┐  ┌───────▼──────────-──┐
                  │  Redis            │  │  PostgreSQL         │
                  │  · cache-aside    │  │  · users            │
                  │  · write-through  │  │  · links            │
                  │  · rate limiting  │  │  · clicks (TS)      │
-                 │  · SETNX reserve  │  └───────▲────────────┘
+                 │  · SETNX reserve  │  └───────▲───────-─────┘
                  └───────────┬───────┘          │
-                             │ enqueue    flush  │
-                 ┌───────────▼──────────────────┴──────────┐
-                 │  Celery Worker + Beat          (Day 3)   │
+                             │ enqueue    flush │
+                 ┌───────────▼──────────────────┴────────-──┐
+                 │  Celery Worker + Beat                    │
                  │  · GeoIP lookup (MaxMind offline)        │
                  │  · User-agent parsing                    │
-                 │  · Counter flush to Postgres             │
+                 │  · Counter flush to Postgres   (~30s)    │
                  │  · Webhook firing on threshold           │
-                 └─────────────────────────────────────────┘
+                 └──────────────────────────────────────-───┘
 ```
 
 ## Redis DB separation
@@ -173,6 +173,8 @@ That is sufficient for Phase 1 while keeping URLs compact.
 Full details → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 Design decisions → [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md)
+
+Analytics pipeline → [docs/ANALYTICS.md](docs/ANALYTICS.md)
 
 ---
 
@@ -194,10 +196,14 @@ cd url-shortener-analytics
 # 2. Configure environment
 cp .env.example .env.dev
 
-# 3. Build and start (migrations run automatically)
+# 3. (Optional) Add GeoIP database for country/city analytics
+#    See docs/GEOIP_SETUP.md for download instructions
+#    Place the file at: geoip/GeoLite2-City.mmdb
+
+# 4. Build and start (migrations run automatically)
 docker compose up --build
 
-# 4. Open interactive docs
+# 5. Open interactive docs
 #    Swagger UI → http://localhost:8000/docs
 #    ReDoc      → http://localhost:8000/redoc
 ```
@@ -328,6 +334,46 @@ curl -X DELETE http://localhost:8000/api/v1/links/demo \
   -H "X-API-Key: YOUR_KEY"
 ```
 
+### Analytics — link stats
+
+Retrieve aggregated analytics for a link you own.
+```bash
+curl "http://localhost:8000/api/v1/analytics/links/demo?range_days=30" \
+  -H "X-API-Key: YOUR_KEY"
+```
+
+Example response:
+```json
+{
+  "data": {
+    "short_code": "demo",
+    "total_clicks": 42,
+    "by_day": [
+      { "date": "2026-07-01", "clicks": 20 }
+    ],
+    "by_country": [
+      { "country": "United States", "clicks": 18 }
+    ],
+    "by_browser": [
+      { "browser": "Chrome", "clicks": 25 }
+    ],
+    "by_device": [
+      { "device_type": "desktop", "clicks": 30 }
+    ],
+    "by_referrer": [
+      { "referrer": "https://google.com", "clicks": 12 }
+    ]
+  },
+  "meta": { "range_days": 30 },
+  "errors": []
+}
+```
+
+**Analytics are eventually consistent.** Clicks are recorded asynchronously
+via Celery and counters flush to PostgreSQL every ~30 seconds via Celery Beat.
+
+Full analytics details → [docs/ANALYTICS.md](docs/ANALYTICS.md)
+
 ### Rate limiting
 
 API and redirect requests may be rate limited.
@@ -388,6 +434,7 @@ api      healthy
 db       healthy
 redis    healthy
 worker   healthy
+beat
 ```
 
 #### Check Redis app keys
@@ -429,7 +476,55 @@ Expected:
 pong
 ```
 
+### Verify click analytics pipeline
+
+Fire a test click with a spoofed public IP (GeoIP cannot resolve local/Docker IPs):
+```bash
+curl -i \
+  -H "X-Forwarded-For: 81.2.69.142" \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36" \
+  -H "Referer: https://google.com" \
+  http://localhost:8000/demo
+```
+
+Check the recorded click in PostgreSQL:
+```bash
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT id, clicked_at, ip_anonymized, country, city, browser, os, device_type, referrer
+ FROM clicks ORDER BY clicked_at DESC LIMIT 5;"
+```
+
+Expected result:
+```text
+ip_anonymized | country        | city   | browser | os      | device_type
+81.2.69.0     | United Kingdom | London | Chrome  | Windows | desktop
+```
+
+#`81.2.69.142` is a MaxMind test IP that resolves to London, United Kingdom.
+Private/local IPs (`127.0.0.1`, `192.168.x.x`, Docker `172.x.x.x`) never
+resolve via GeoIP — `country`/`city` will be NULL for those. This is expected.
+
+### Verify GeoIP service inside worker
+```bash
+docker compose exec -T worker python - <<'PY'
+from app.services.geoip import lookup_geoip
+for ip in ["8.8.8.8", "81.2.69.142", "127.0.0.1"]:
+    print(ip, lookup_geoip(ip))
+PY
+```
+
+Expected when GeoIP database is present:
+```text
+8.8.8.8    GeoIPLocation(country='United States', city=None)
+81.2.69.142 GeoIPLocation(country='United Kingdom', city='London')
+127.0.0.1  GeoIPLocation(country=None, city=None)
+```
+
+If all return `country=None`, the MaxMind database file is missing.
+See [docs/GEOIP_SETUP.md](docs/GEOIP_SETUP.md).
+
 More validation commands → [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md)
+
 ---
 
 ## 7. Technologies
@@ -470,6 +565,8 @@ See [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for the full list.
   - If Celery broker or worker is unavailable, redirects still succeed.
   - Analytics processing is eventually consistent.
   - GeoIP requires optional MaxMind file and gracefully degrades without it.
+  - GeoIP lookup uses the raw client IP for accuracy; only the anonymized IP is persisted.
+
 
 **Current limitations:**
   - Full click-event analytics enrichment is still Phase 3 work.

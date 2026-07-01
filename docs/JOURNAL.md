@@ -427,5 +427,179 @@ production operational paths.
 
 ---
 
-## Phase 3 — *(to be completed)*
+## Phase 3 — Analytics Collection & Processing
+
+**Goal:** Turn the Phase 2 Celery foundation into a complete, non-blocking
+analytics pipeline: enrich every click with GeoIP + User-Agent data, persist
+enriched click events to PostgreSQL, durably flush Redis counters, and expose
+time-series stats through a versioned API.
+
+### Branch plan
+
+Worked through Phase 3 in ordered feature branches, each merged via PR to `main`:
+
+```text
+feat/d3-click-schema           — clicks table + Phase 3 columns + indexes
+feat/d3-analytics-enrichment   — GeoIP, User-Agent, privacy helpers
+feat/d3-click-recording        — non-blocking click recording in the task
+feat/d3-counter-flush          — Redis→PostgreSQL counter flush (Celery Beat)
+feat/d3-stats-api              — analytics stats endpoints
+docs/d3-analytics              — full Phase 3 documentation
+```
+
+### What I built
+
+**Click event schema (`feat/d3-click-schema`)**
+
+- Finalized the clicks table as the time-series event store:
+```text
+id, link_id (FK), clicked_at, ip_anonymized, country, city,
+browser, os, device_type, referrer, user_agent
+```
+
+- Indexes for time-series queries:
+```sql
+CREATE INDEX ix_clicks_link_clicked_at ON clicks (link_id, clicked_at);
+CREATE INDEX ix_clicks_clicked_at      ON clicks (clicked_at);
+```
+- Alembic migration to add the Phase 3 columns and create the table.
+
+**Enrichment helpers (`feat/d3-analytics-enrichment`)**
+- `app/services/geoip.py` — MaxMind GeoLite2 lookup returning `GeoIPLocation(country, city)`. **Fails open:** missing database file, missing `geoip2` package, invalid IP, or IP not in DB all return empty values instead of raising.
+- `app/services/user_agent.py` — parses the UA string into `browser`, `os`, and a `device_type` classification (desktop / mobile / tablet / unknown).
+- IP anonymization helper — IPv4 last octet zeroed (`203.0.113.45 → 203.0.113.0`), IPv6 truncated to the first 4 groups.
+
+**Non-blocking click recording (`feat/d3-click-recording`)**
+- Extended `analytics.process_click_event` to do the full enrichment:
+```text
+parse User-Agent → browser, os, device_type
+GeoIP lookup on RAW ip → country, city
+anonymize ip → ip_anonymized (stored)
+INSERT clicks row in PostgreSQL
+update lightweight Redis analytics counters
+```
+- **Privacy rule:** GeoIP lookup uses the raw IP for accuracy, but only the anonymized IP is ever persisted. The raw IP never touches PostgreSQL, Redis, or logs.
+- Redirect path remains unchanged in shape: resolve → INCR counter → enqueue → return 301/302. Enrichment happens entirely in the worker.
+
+**Counter flush (`feat/d3-counter-flush`)**
+- Added `analytics.flush_click_counters`, scheduled by **Celery Beat** every ~30 seconds.
+- Uses Redis `GETDEL` (atomic get-and-delete) so an `INCR` landing between a `GET` and a `DEL` can never lose a click.
+- On DB failure after `GETDEL`, the counter value is restored to Redis and the task retries (max 3, exponential backoff). No clicks lost.
+- Added a `beat` service to `docker-compose.yml`.
+
+**Stats API (`feat/d3-stats-api`)**
+- New router `app/api/v1/analytics.py` under `/api/v1/analytics`, four focused endpoints:
+```text
+GET /api/v1/analytics/overview
+GET /api/v1/analytics/links/{short_code}/overview
+GET /api/v1/analytics/links/{short_code}/timeseries
+GET /api/v1/analytics/links/{short_code}/breakdown?dimension=...
+```
+- `breakdown` supports six dimensions via a single `dimension` enum: `country`, `city`, `browser`, `os`, `device_type`, `referrer`.
+- Shared query params: `days` (1–365, default 30), or explicit `from`/`to` ISO-8601 datetimes; `breakdown` adds `limit` (1–100, default 10).
+- All queries hit the PostgreSQL `clicks` table directly (full enriched data), not the Redis counters. Every response carries the exact date range in `meta`.
+
+### Key decisions
+
+**GeoIP lookup on raw IP, store anonymized IP**
+Anonymizing before lookup would zero the last octet and destroy subnet-level
+precision, badly degrading city accuracy. So lookup uses the raw IP; only the
+anonymized form is stored. The raw IP is transient in worker memory only.
+
+**GeoIP fails open**
+GeoIP is optional context. A missing MaxMind file must never stop a click from
+being recorded. Every failure mode returns NULL country/city and the click is
+still persisted.
+
+**`GETDEL` for counter flush**
+`GET` + `DEL` is a race: an `INCR` between the two erases a click. `GETDEL` is
+one atomic op. Combined with restore-on-failure, the flush is both race-free
+and lossless.
+
+**Four focused stats endpoints over one combined endpoint**
+Each endpoint maps to one query — simpler to test and cache. `breakdown`
+folds all six dimensions into one route via an enum rather than proliferating
+endpoints. Clients (and the Phase 4 dashboard) fetch only what they render.
+
+**Stats query PostgreSQL, not Redis counters**
+Redis counters are a hot-path optimization without the enriched fields.
+PostgreSQL `clicks` has the full data and SQL `GROUP BY` handles arbitrary
+ranges cleanly. Avoids Redis/PG dual-consistency concerns for reads.
+
+**Index the `clicks` table, don’t partition yet**
+Composite indexes are sufficient at evaluation scale and far simpler than
+partition management. Monthly `RANGE` partitions on `clicked_at` are documented
+as the future path once rows reach millions.
+
+### Validation performed
+
+**Click enrichment end-to-end**
+
+- Fired redirects with a spoofed public test IP and a real browser UA:
+```bash
+curl -i \
+  -H "X-Forwarded-For: 81.2.69.142" \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126 Safari/537.36" \
+  -H "Referer: https://google.com" \
+  http://localhost:8000/{short_code}
+```
+- Confirmed the `clicks` row: `ip_anonymized = 81.2.69.0`, `country = United Kingdom`, `city = London`, `browser = Chrome`, `os = Windows`, `device_type = desktop`, referrer captured.
+
+**GeoIP service directly**
+```bash
+docker compose exec -T worker python - <<'PY'
+from app.services.geoip import lookup_geoip
+for ip in ["8.8.8.8", "81.2.69.142", "127.0.0.1"]:
+    print(ip, lookup_geoip(ip))
+PY
+```
+- `81.2.69.142` → London, UK (city works).
+- `8.8.8.8` / `1.1.1.1` → country only, no city — expected for infra/CDN IPs.
+- `127.0.0.1` and Docker `172.x.x.x` → empty — expected for private IPs.
+
+**Counter flush**
+
+- Confirmed `analytics.flush_click_counters` registered and firing on the Beat schedule; watched a Redis counter drain to `links.click_count` after ~30s.
+Verified a spot check: short_code `statstest1782867762` reached `click_count = 30`.
+
+**Stats API**
+```bash
+curl "http://localhost:8000/api/v1/analytics/links/{short_code}/overview"     -H "X-API-Key: $API_KEY"
+curl "http://localhost:8000/api/v1/analytics/links/{short_code}/timeseries?days=7" -H "X-API-Key: $API_KEY"
+curl "http://localhost:8000/api/v1/analytics/links/{short_code}/breakdown?dimension=country" -H "X-API-Key: $API_KEY"
+```
+- Confirmed correct envelopes, `meta` date ranges, and all six breakdown dimensions.
+
+**Test suite**
+
+- Full suite green: 54 tests passing.
+
+### Documentation updated
+- `README.md` — flipped Phase 3 features to done, added analytics API section, analytics validation block, updated tasks list and limitations.
+- `docs/ANALYTICS.md` — **new** — full pipeline doc (flow, schema, Redis keys, tasks, stats API, validation, failure behavior, checklist).
+- `docs/ARCHITECTURE.md` — Phase 3 diagram, `flush_click_counters` task, Beat, clicks ERD, analytics keyspace, full request flow, GeoIP validation.
+- `docs/ASSUMPTIONS.md` — moved completed items out of limitations, added raw-IP-lookup and `GETDEL` flush assumptions, added GeoIP coverage note.
+- `docs/DESIGN_DECISIONS.md` — added six Phase 3 decisions (raw-IP lookup, fail-open GeoIP, `GETDEL` flush, four-endpoint stats API, PG-not-Redis reads, index-not-partition) plus a trade-offs summary.
+- `docs/GEOIP_SETUP.md` — download/extract/mount/restart flow, verification snippet, troubleshooting table, raw-lookup/anonymized-storage privacy note.
+- `docs/API.md` — replaced the analytics placeholder with all four real endpoints and full parameter tables.
+
+### Blockers / notes
+- `clicks` **table missing / DuplicateTable during migration**. Hit an Alembic ordering issue where an enrichment migration referenced `clicks` before it existed, and later a `DuplicateTable` because the table already existed. Resolved by ordering the schema migration (`feat/d3-click-schema`) first and reconciling revision history.
+- **`permission denied ... /home/appuser/.cache/uv` when running Alembic via `uv run` inside the container.** Worked around by invoking `alembic` directly: `docker compose exec api alembic upgrade head`.
+- **CI mypy error** in `_run_async` in `app/tasks/analytics.py` around missing type parameters — fixed so the quality gate stays green.
+- **`c.ip_address column does not exist`** — early query referenced the raw-IP column name; corrected to `ip_anonymized` (the raw IP is never stored).
+- **Empty country/city for `8.8.8.8`, `1.1.1.1`, `127.0.0.1`**. Confirmed this is expected: local IPs are not public, and infra/CDN IPs often lack city data in GeoLite2. Used `81.2.69.142` (MaxMind test IP → London) to prove city lookup works.
+- **`curl -I` (HEAD) may not register a click** — used `GET` for click tests.
+- **GeoIP service placement** — decided to put lookup logic in `app/services/geoip.py`(service layer) and keep the root `geoip/` directory strictly for the gitignored `.mmdb` data file.
+
+### Current limitations after Phase 3
+- Webhooks on click thresholds not implemented yet (future).
+- Analytics dashboard is Phase 4 work.
+- `clicks` table is indexed but not partitioned yet.
+- GeoIP city coverage depends on MaxMind data; some IPs return country only.
+- No JWT/OAuth yet.
+- No email verification yet.
+- No soft delete yet.
+- Single-region deployment only.
+
 ## Phase 4 — *(to be completed)*
