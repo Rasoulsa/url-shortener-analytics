@@ -8,9 +8,9 @@
               │                                               │
               │  /api/v1/auth      Registration + API key     │
               │  /api/v1/links     CRUD + pagination          │
-              │  /api/v1/analytics Time-series stats (Day 3)  │
+              │  /api/v1/analytics Time-series stats          │
               │  /{short_code}     Redirect (hot path)        │
-              │  /dashboard        Chart.js UI (Day 4)        │
+              │  /dashboard        Chart.js UI (Phase 4)      |
               │  /health           System status              │
               └──────────────┬──────────────────┬───────────-─┘
                              │                  │
@@ -20,8 +20,8 @@
                  │  Redis DB 0       │  │  PostgreSQL         │
                  │  · metadata cache │  │  · users            │
                  │  · click counters │  │  · links            │
-                 │  · rate limits    │  │  · clicks (Day 3)   │
-                 │  · SETNX reserve  │  │  · analytics (Day 3)│
+                 │  · rate limits    │  │  · clicks           │
+                 │  · SETNX reserve  │  │  · analytics        │
                  │  · analytics tmp  │  └───────▲───────────-─┘
                  └───────────┬───────┘          │
                              │                  │
@@ -36,21 +36,20 @@
                  │  Celery Worker                             │
                  │  · health.ping                             │
                  │  · analytics.process_click_event           │
-                 │  · GeoIP lookup (Day 3)                    │
-                 │  · User-agent parsing (Day 3)              │
-                 │  · Counter flush to Postgres (Day 3)       │
-                 │  · Webhook firing on threshold (Day 3+)    │
+                 │  · GeoIP lookup                            │
+                 │  · User-agent parsing                      │
+                 │  · Counter flush to Postgres (~30s)        │
+                 │  · Webhook firing on threshold (Phase 4)   │
                  └──────────────────────────────────────────-─┘
 ```
 The service is built around a FastAPI API layer, PostgreSQL as the primary source of truth, Redis for low-latency infrastructure, and Celery for non-blocking background processing.
 
-Phase 2 adds the Redis and Celery foundation:
+Phase 3 adds the Redis and Celery foundation:
 
-- Redis cache-aside link metadata for fast redirects
-- Redis write-through click counters
-- Redis sliding-window rate limiting
-- Celery worker setup for asynchronous analytics tasks
-- Separate Redis logical databases for application cache, Celery broker, and Celery results
+- Celery task enriches each click with GeoIP country/city and parsed User-Agent
+- Raw IP is used for GeoIP accuracy; only the anonymized IP is persisted
+- Celery Beat flushes Redis click counters to PostgreSQL every ~30 seconds
+- Time-series stats API exposes per-link breakdowns by day, country, browser, OS, device, and referrer
 
 ## 2. Layered Architecture
 
@@ -74,13 +73,13 @@ Phase 2 adds the Redis and Celery foundation:
 
 Responsibilities:
 
-- Routers stay thin: parse input, apply dependencies, delegate to services.
-- Middleware handles cross-cutting request concerns such as rate limiting.
-- Services hold business logic such as short-code generation, cache access, counters, and analytics enqueueing.
-- Tasks perform asynchronous work outside the request/redirect path.
-- Models own persistence mapping.
-- PostgreSQL remains the source of truth.
-- Redis is used as a performance, coordination, and queueing layer.
+- **Routers** stay thin: parse input, apply dependencies, delegate to services.
+- **Middleware** handles cross-cutting request concerns such as rate limiting.
+- **Services** hold business logic such as short-code generation, cache access, counters, and analytics enqueueing.
+- **Tasks** perform asynchronous work outside the request/redirect path.
+- **Models** own persistence mapping.
+- **PostgreSQL** remains the source of truth.
+- **Redis** is used as a performance, coordination, and queueing layer.
 
 ## 3. Runtime Components
 
@@ -91,6 +90,7 @@ FastAPI exposes:
 ```text
 /api/v1/auth
 /api/v1/links
+/api/v1/analytics
 /{short_code}
 /health
 ```
@@ -126,8 +126,10 @@ PostgreSQL is authoritative for:
 - Link ownership
 - Link expiration
 - Password protection metadata
-- Durable click/analytics data in later phases
-- Redis data can be rebuilt or repopulated from PostgreSQL where applicable.
+- Durable click events (`clicks` table)
+- `links.click_count` — eventually consistent counter flushed from Redis
+
+Redis data can be rebuilt or repopulated from PostgreSQL where applicable.
 
 ### Redis
 
@@ -143,7 +145,7 @@ DB 2        redis://redis:6379/2     Celery result backend
 
 Environment variables:
 
-```apache
+```ini
 REDIS_URL=redis://redis:6379/0
 CELERY_BROKER_URL=redis://redis:6379/1
 CELERY_RESULT_BACKEND=redis://redis:6379/2
@@ -151,7 +153,7 @@ CELERY_RESULT_BACKEND=redis://redis:6379/2
 
 This separation prevents Celery broker/result keys from mixing with application cache keys.
 
-### Celery worker
+### Celery worker + Beat
 
 Celery is used for background analytics work that should not block redirects.
 
@@ -165,11 +167,19 @@ celery -A app.tasks.celery_app:celery_app worker \
   --hostname=celery@%h
 ```
 
-Registered Phase 2 tasks:
+Beat command (counter flush scheduler):
+
+```bashe
+celery -A app.tasks.celery_app:celery_app beat \
+  --loglevel=INFO
+```
+
+Registered tasks:
 
 ```text
-health.ping
-analytics.process_click_event
+analytics.process_click_event     — enrich + persist one click row (per redirect)
+analytics.flush_click_counters    — Redis→PostgreSQL counter flush (Beat, ~30s)
+health.ping                       — worker liveness check
 ```
 The worker is not an HTTP service, so its healthcheck must use Celery inspection, not `curl`.
 
@@ -185,25 +195,25 @@ celery -A app.tasks.celery_app:celery_app inspect ping --timeout=5
 users                    links                        clicks
 ─────                    ─────                        ──────
 id          PK     ┌──< id           PK          ┌──< id
-email       UQ     │    short_code    UQ INDEX   │    link_id       FK
-hashed_pw          │    long_url                 │    clicked_at
-api_key     UQ     │    user_id       FK         │    ip_anonymized
-created_at         │    password_hash            │    country
-                   │    expires_at    INDEX      │    city
-                   │    is_permanent             │    browser
-                   │    click_count              │    os
-                   │    webhook_url              │    device_type
-                   │    webhook_threshold        │    referrer
-                   │    webhook_fired            │
-                   │    created_at               │  Indexes:
-                   │    updated_at               │  (link_id, clicked_at)
-                   └────                         │  (link_id, country)
-                                                 │  (link_id, browser)
+email       UQ     │    short_code    UQ INDEX   │    link_id       FK → links.id
+hashed_pw          │    long_url                 │    clicked_at    timestamptz
+api_key     UQ     │    user_id       FK →users  │    ip_anonymized varchar
+created_at         │    password_hash            │    country       varchar (nullable)
+                   │    expires_at    INDEX      │    city          varchar (nullable)
+                   │    is_permanent             │    browser       varchar (nullable)
+                   │    click_count              │    os            varchar (nullable)
+                   │    webhook_url              │    device_type   varchar
+                   │    webhook_threshold        │    referrer      text (nullable)
+                   │    webhook_fired            │    user_agent    text
+                   │    created_at               │
+                   │    updated_at               │  Indexes:
+                   └────                         │  (link_id, clicked_at)
+                                                 │  (clicked_at)
                                                  └────
 ```
-Current durable source-of-truth entities are users and links.
-
-The clicks table is part of the planned analytics model. Day 2 introduces the asynchronous pipeline and Redis analytics counters first. Later phases can persist enriched click events and rollups into PostgreSQL.
+`clicks` is the Phase 3 time-series event store. Every redirect enqueues
+a Celery task that inserts one enriched row. links.click_count is a
+denormalized counter flushed from Redis every ~30 seconds.
 
 ## 5. Redis Keyspace
 
@@ -227,16 +237,19 @@ Stores JSON metadata needed for redirect decisions:
   "password_hash": null
 }
 ```
-### Click counter
+### Click counter (write-through)
+
 ```text
 link:{short_code}:clicks
 ```
-Example:
+Atomic `INCR` on every redirect. Flushed to `links.click_count` by
+`analytics.flush_click_counters` using `GETDEL` to avoid double-counting.
+
+Pending flush tracking:
 
 ```text
-link:countertest1782823999:clicks
+pending_click_counter_flush   (Redis Set of short_codes with unflushed counts)
 ```
-Used for fast atomic click increments during redirects.
 
 ### Short-code reservation
 
@@ -251,17 +264,21 @@ rate_limit:auth:{identifier_hash}
 rate_limit:api:{identifier_hash}
 rate_limit:redirect:{identifier_hash}
 ```
-Used by the Redis sliding-window rate limiter.
 
-### Analytics counters
+
+### Analytics counters (Phase 3)
 
 ```
 analytics:clicks:processed
 analytics:link:{short_code}:processed
-analytics:link:{short_code}:daily:{YYYY-MM-DD}
-analytics:link:{short_code}:last_event
+analytics:link:{short_code}:daily:{YYYY-MM-DD}        TTL: 90 days
+analytics:link:{short_code}:country:{country}         TTL: 90 days
+analytics:link:{short_code}:browser:{browser}         TTL: 90 days
+analytics:link:{short_code}:device:{device_type}      TTL: 90 days
+analytics:link:{short_code}:last_event                TTL: 30 days
 ```
-Used by Celery analytics tasks for lightweight Day 2 validation and future analytics expansion.
+All PII (IP, UA, referrer) is SHA-256 hashed before being written to Redis
+summary keys. Raw values are never stored in Redis.
 
 ## 6. Request Flows
 
@@ -272,73 +289,52 @@ POST /api/v1/links
   → validate payload with Pydantic
   → if custom_alias:
         validate alias
-        reserve/check uniqueness
+        reserve/check uniqueness via Redis SETNX + DB UNIQUE
   → else:
         generate unique Base62 short code
-        reserve/check uniqueness
+        reserve/check uniqueness via Redis SETNX + DB UNIQUE
   → INSERT links row in PostgreSQL
-  → optionally cache redirect metadata
-  → 201 {data: LinkOut}
+  → SET link:{short_code}:meta in Redis cache
+  → 201 { data: LinkOut }
 ```
 
-### Redirect — Phase 1 DB-only baseline
+### Redirect — Phase 3 full flow
 ```text
 GET /{short_code}
-  → DB lookup
-  → if not found: 404
-  → if expired: 410
-  → if password_hash: return unlock/password flow
-  → click_count += 1 synchronously
-  → return 301 or 302
-```
-
-### Redirect — Phase 2 with Redis cache and counters
-```text
-GET /{short_code}
-  → RateLimitMiddleware
+  → RateLimitMiddleware (sliding-window, Redis sorted set + Lua)
   → Redis GET link:{short_code}:meta
   → HIT:
-        validate cached metadata
+        validate cached metadata (expiry, password)
         Redis INCR link:{short_code}:clicks
-        enqueue analytics.process_click_event
-        return 301/302
+        enqueue analytics.process_click_event(short_code, ip, ua, referrer)
+        return 301 or 302 immediately
   → MISS:
         PostgreSQL lookup
         if not found: 404
         if expired: 410
         Redis SET link:{short_code}:meta
         Redis INCR link:{short_code}:clicks
-        enqueue analytics.process_click_event
-        return 301/302
-```
-Fast path on cache hit:
-```text
-Redis metadata hit
-  → Redis counter increment
-  → Celery enqueue
-  → redirect response
-  ```
-  This avoids a PostgreSQL read on hot redirects.
+        enqueue analytics.process_click_event(short_code, ip, ua, referrer)
+        return 301 or 302 immediately
 
-### Redirect — Phase 3 full analytics target
-```text
-GET /{short_code}
-GET /{short_code}
-  → Redis metadata lookup
-  → record fast counter
-  → enqueue analytics task
-  → return redirect immediately
+[Celery worker — analytics queue]
+  → parse User-Agent → browser, os, device_type
+  → GeoIP lookup on RAW ip → country, city
+  → anonymize ip → ip_anonymized (last octet zeroed)
+  → INSERT clicks row in PostgreSQL
+  → update Redis analytics counters
 
-[worker]
-  → GeoIP lookup
-  → user-agent parsing
-  → anonymize/hash sensitive fields
-  → INSERT click event
-  → update rollups
-  → optionally flush Redis counters to PostgreSQL
-  → optionally fire webhook threshold events
+[Celery Beat — every ~30s]
+  → analytics.flush_click_counters
+  → GETDEL link:{short_code}:clicks
+  → UPDATE links SET click_count = click_count + N
 ```
-Phase 2 establishes the queue and worker foundation. Phase 3 can extend the task to persist enriched time-series analytics.
+
+**Privacy rule enforced in the worker:**
+```python
+geoip_info    = lookup_geoip(ip_address)   # raw IP → accurate lookup
+ip_anonymized = anonymize_ip(ip_address)   # 8.8.8.8 → 8.8.8.0 (stored)
+```
 
 ## 7. Rate Limiting Architecture
 
@@ -377,15 +373,6 @@ request
   → else add current request and continue
 ```
 
-When exceeded:
-```http
-HTTP/1.1 429 Too Many Requests
-Retry-After: <seconds>
-X-RateLimit-Limit: <limit>
-X-RateLimit-Remaining: 0
-```
-If Redis is unavailable, the rate limiter fails open and allows the request. This preserves service availability.
-
 ### 8. Cache and Queue Failure Behavior
 
 ```text
@@ -401,6 +388,8 @@ If Redis is unavailable, the rate limiter fails open and allows the request. Thi
 │ Celery broker unavailable          │ Log warning; redirect still succeeds         │
 ├────────────────────────────────────┼──────────────────────────────────────────────┤
 │ Celery worker unavailable          │ Tasks may queue; redirect still succeeds     │
+├────────────────────────────────────┼──────────────────────────────────────────────┤
+│ GeoIP database missing             │ Click stored with country/city = NULL        │
 ├────────────────────────────────────┼──────────────────────────────────────────────┤
 │ PostgreSQL unavailable             │ API management and cache misses fail normally│
 └────────────────────────────────────┴──────────────────────────────────────────────┘
@@ -424,6 +413,7 @@ api      healthy
 db       healthy
 redis    healthy
 worker   healthy
+beat
 ```
 
 ### Verify Redis DB separation
@@ -449,11 +439,13 @@ docker compose exec worker celery -A app.tasks.celery_app:celery_app inspect reg
 
 Expected tasks:
 ```bash
+analytics.flush_click_counters
 analytics.process_click_event
 health.ping
-Health ping:
+```
 
-bash
+### Health ping:
+```bash
 docker compose exec -T api python - <<'PY'
 from app.tasks.health import ping
 
@@ -461,10 +453,29 @@ result = ping.delay()
 print(result.get(timeout=10))
 PY
 ```
+
 Expected:
 ```text
 pong
 ```
+
+### Verify GeoIP service
+```bash
+docker compose exec -T worker python - <<'PY'
+from app.services.geoip import lookup_geoip
+for ip in ["8.8.8.8", "81.2.69.142", "127.0.0.1"]:
+    print(ip, lookup_geoip(ip))
+PY
+```
+
+Expected when GeoIP database is present:
+```text
+8.8.8.8     GeoIPLocation(country='United States', city=None)
+81.2.69.142 GeoIPLocation(country='United Kingdom', city='London')
+127.0.0.1   GeoIPLocation(country=None, city=None)
+```
+If all return `country=None`, the MaxMind database file is missing.
+See [docs/GEOIP_SETUP.md](docs/GEOIP_SETUP.md).
 
 ### Verify redirect cache/counter
 ```bash
@@ -484,15 +495,30 @@ curl -i "http://localhost:8001/${ALIAS}"
 docker compose exec redis redis-cli -n 0 get "link:${ALIAS}:meta"
 docker compose exec redis redis-cli -n 0 get "link:${ALIAS}:clicks"
 ```
-When using `zsh`, always use braces around variables followed by more text:
+
+> When using `zsh`, always use braces around variables followed by more text:
+> `"link:${ALIAS}:clicks"` not `"link:$ALIAS:clicks"`.
+> Because it can expand to an unexpected key string.
+
+### Verify analytics pipeline end-to-end
 ```bash
-"link:${ALIAS}:clicks"
+# Fire a click with a resolvable public IP
+curl -i \
+  -H "X-Forwarded-For: 81.2.69.142" \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36" \
+  -H "Referer: https://google.com" \
+  "http://localhost:8001/${ALIAS}"
+
+# Confirm the click row was persisted
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT id, clicked_at, ip_anonymized, country, city, browser, os, device_type, referrer
+ FROM clicks ORDER BY clicked_at DESC LIMIT 3;"
+
+# Wait for counter flush, then confirm click_count
+sleep 35
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT short_code, click_count FROM links WHERE short_code = '${ALIAS}';"
 ```
-Do not use:
-```bash
-"link:$ALIAS:clicks"
-```
-because it can expand to an unexpected key string.
 
 ## 10. Design Decisions
 see:
