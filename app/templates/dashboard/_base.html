@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Analytics Dashboard{% endblock %} — URL Shortener</title>
+
+  <!-- TailwindCSS (CDN, no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Chart.js 4 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* thin scrollbar for tables */
+    .thin-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+    .thin-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+  </style>
+</head>
+<body class="h-full font-sans text-gray-800">
+
+<!-- NAV -->
+<nav class="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-6 shadow-sm">
+  <span class="font-bold text-indigo-600 text-lg tracking-tight">🔗 URL Analytics</span>
+  <a href="/dashboard/"
+     class="text-sm font-medium text-gray-600 hover:text-indigo-600 transition">
+    Dashboard
+  </a>
+  <a href="/dashboard/compare"
+     class="text-sm font-medium text-gray-600 hover:text-indigo-600 transition">
+    Compare Links
+  </a>
+  <div class="ml-auto">
+    <a href="/docs"
+       class="text-xs text-gray-400 hover:text-gray-600 transition">API Docs ↗</a>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="max-w-6xl mx-auto px-4 py-8">
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

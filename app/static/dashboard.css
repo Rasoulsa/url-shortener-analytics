@@ -1,0 +1,5 @@
+/* Minimal overrides — Tailwind handles everything else */
+html { scroll-behavior: smooth; }
+
+/* Fix Chart.js canvas not respecting parent height in some browsers */
+canvas { display: block; }

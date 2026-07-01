@@ -1,0 +1,260 @@
+{% extends "dashboard/_base.html" %}
+{% block title %}Compare Links{% endblock %}
+
+{% block content %}
+
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Multi-Link Comparison</h1>
+  <p class="text-sm text-gray-500 mt-0.5">
+    Compare daily visits for up to 10 of your short links on one chart.
+  </p>
+</div>
+
+<!-- ── Controls ── -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        API Key
+      </label>
+      <input id="apiKey" type="password" placeholder="your-api-key"
+             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        Short Codes
+        <span class="normal-case font-normal">(comma-separated, max 10)</span>
+      </label>
+      <input id="codes" type="text" placeholder="abc123, def456, ghi789"
+             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        Period
+      </label>
+      <select id="period"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+    </div>
+
+  </div>
+
+  <div class="mt-4 flex items-center gap-3">
+    <button onclick="loadCompare()"
+            class="px-5 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold
+                   hover:bg-indigo-700 active:scale-95 transition">
+      Compare
+    </button>
+    <span id="statusMsg" class="text-sm text-gray-500"></span>
+  </div>
+</div>
+
+<!-- ── Error banner ── -->
+<div id="errorBanner"
+     class="hidden mb-4 rounded-lg bg-red-50 border border-red-200
+            text-red-700 px-4 py-3 text-sm">
+</div>
+
+<!-- ── Chart ── -->
+<div id="chartCard"
+     class="hidden bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
+  <h2 class="text-base font-semibold text-gray-700 mb-4" id="chartTitle">
+    Comparison
+  </h2>
+  <div class="relative h-80">
+    <canvas id="compareChart"></canvas>
+  </div>
+</div>
+
+<!-- ── Summary table ── -->
+<div id="summaryCard"
+     class="hidden bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+  <h2 class="text-base font-semibold text-gray-700 mb-3">Summary</h2>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-xs text-gray-400 uppercase border-b border-gray-100">
+        <th class="text-left pb-2">Short Code</th>
+        <th class="text-right pb-2">Total Clicks</th>
+        <th class="text-right pb-2">Daily Avg</th>
+        <th class="text-right pb-2">Peak Day</th>
+        <th class="text-right pb-2">Peak Clicks</th>
+      </tr>
+    </thead>
+    <tbody id="summaryTable"></tbody>
+  </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let cmpChart = null;
+
+const PALETTE = [
+  "#6366f1","#f59e0b","#10b981","#ef4444",
+  "#8b5cf6","#3b82f6","#ec4899","#14b8a6",
+  "#f97316","#84cc16",
+];
+
+function apiKey() { return document.getElementById("apiKey").value.trim(); }
+function period() { return document.getElementById("period").value; }
+
+function setStatus(msg, err = false) {
+  const el = document.getElementById("statusMsg");
+  el.textContent = msg;
+  el.className = err ? "text-sm text-red-500" : "text-sm text-gray-500";
+}
+
+function showError(msg) {
+  const b = document.getElementById("errorBanner");
+  b.textContent = msg;
+  b.classList.remove("hidden");
+}
+
+function clearError() {
+  document.getElementById("errorBanner").classList.add("hidden");
+}
+
+async function loadCompare() {
+  clearError();
+
+  const rawCodes = document.getElementById("codes").value;
+  const codes = rawCodes.split(",").map(s => s.trim()).filter(Boolean);
+  const days   = period();
+
+  if (!apiKey())        { showError("Please enter your API key."); return; }
+  if (!codes.length)    { showError("Please enter at least one short code."); return; }
+  if (codes.length > 10){ showError("Maximum 10 codes allowed."); return; }
+
+  setStatus("Loading…");
+
+  try {
+    const r = await fetch(
+      `/api/v1/analytics/compare?codes=${codes.join(",")}&days=${days}`,
+      { headers: { "X-API-Key": apiKey() } },
+    );
+    const json = await r.json();
+
+    if (!r.ok) {
+      throw new Error(json.errors?.[0]?.message ?? `HTTP ${r.status}`);
+    }
+
+    const data = json.data;
+    renderCompareChart(data, days);
+    renderSummaryTable(data, days);
+
+    ["chartCard","summaryCard"].forEach(id =>
+      document.getElementById(id).classList.remove("hidden")
+    );
+
+    setStatus(`Comparing ${data.series.length} link(s) · ${days}-day window`);
+
+  } catch (err) {
+    showError(err.message);
+    setStatus("Failed", true);
+  }
+}
+
+function renderCompareChart(data, days) {
+  if (cmpChart) { cmpChart.destroy(); cmpChart = null; }
+
+  document.getElementById("chartTitle").textContent =
+    `Daily Visits — Last ${days} Days`;
+
+  // All series share the same date labels (same period)
+  const labels = data.series[0]?.points.map(p => p.date) ?? [];
+
+  const datasets = data.series.map((s, i) => ({
+    label: s.short_code,
+    data: s.points.map(p => p.clicks),
+    borderColor: PALETTE[i % PALETTE.length],
+    backgroundColor: PALETTE[i % PALETTE.length] + "18",
+    borderWidth: 2,
+    pointRadius: 3,
+    pointHoverRadius: 5,
+    fill: false,
+    tension: 0.3,
+  }));
+
+  const ctx = document.getElementById("compareChart").getContext("2d");
+  cmpChart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { font: { size: 11 }, boxWidth: 14, padding: 10 },
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx =>
+              ` ${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString()} clicks`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { maxTicksLimit: 10, font: { size: 11 } },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1, font: { size: 11 } },
+        },
+      },
+    },
+  });
+}
+
+function renderSummaryTable(data, days) {
+  const tbody = document.getElementById("summaryTable");
+  tbody.innerHTML = "";
+
+  data.series.forEach((s, i) => {
+    const clicks = s.points.map(p => p.clicks);
+    const peak   = Math.max(...clicks, 0);
+    const peakDay = clicks.indexOf(peak) >= 0
+      ? s.points[clicks.indexOf(peak)]?.date ?? "—"
+      : "—";
+    const avg = s.points.length
+      ? (s.total / s.points.length).toFixed(1)
+      : "0.0";
+
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-gray-50 hover:bg-gray-50 transition";
+    tr.innerHTML = `
+      <td class="py-2 flex items-center gap-2">
+        <span class="w-3 h-3 rounded-sm inline-block flex-shrink-0"
+              style="background:${PALETTE[i % PALETTE.length]}"></span>
+        <span class="font-medium">${s.short_code}</span>
+      </td>
+      <td class="py-2 text-right font-bold text-indigo-600">
+        ${s.total.toLocaleString()}
+      </td>
+      <td class="py-2 text-right text-gray-500">${avg}</td>
+      <td class="py-2 text-right text-gray-500">${peakDay}</td>
+      <td class="py-2 text-right text-gray-500">${peak.toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// Enter key triggers compare
+document.getElementById("codes").addEventListener("keydown", e => {
+  if (e.key === "Enter") loadCompare();
+});
+</script>
+{% endblock %}

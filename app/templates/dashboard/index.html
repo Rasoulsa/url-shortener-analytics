@@ -1,0 +1,386 @@
+{% extends "dashboard/_base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+
+<!-- ── Header ── -->
+<div class="mb-6 flex flex-wrap items-end gap-4">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Analytics Dashboard</h1>
+    <p class="text-sm text-gray-500 mt-0.5">
+      Enter your API key and pick a short code to explore analytics.
+    </p>
+  </div>
+</div>
+
+<!-- ── API Key + Code picker ── -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        API Key
+      </label>
+      <input id="apiKey" type="password" placeholder="your-api-key"
+             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        Short Code
+      </label>
+      <input id="shortCode" type="text" placeholder="e.g. abc123"
+             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+
+    <div class="sm:col-span-1">
+      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+        Period
+      </label>
+      <select id="period"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+    </div>
+
+  </div>
+
+  <div class="mt-4 flex items-center gap-3">
+    <button id="loadBtn" onclick="loadDashboard()"
+            class="px-5 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold
+                   hover:bg-indigo-700 active:scale-95 transition">
+      Load Dashboard
+    </button>
+    <span id="statusMsg" class="text-sm text-gray-500"></span>
+  </div>
+</div>
+
+<!-- ── Error banner ── -->
+<div id="errorBanner"
+     class="hidden mb-4 rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-3 text-sm">
+</div>
+
+<!-- ── Stat cards ── -->
+<div id="statCards" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Total Clicks</p>
+    <p id="statTotal" class="text-3xl font-bold text-indigo-600 mt-1">—</p>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Countries</p>
+    <p id="statCountries" class="text-3xl font-bold text-indigo-600 mt-1">—</p>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Top Browser</p>
+    <p id="statBrowser" class="text-xl font-bold text-indigo-600 mt-1 truncate">—</p>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Top Referrer</p>
+    <p id="statReferrer" class="text-xl font-bold text-indigo-600 mt-1 truncate">—</p>
+  </div>
+</div>
+
+<!-- ── Line chart ── -->
+<div id="timeseriesCard"
+     class="hidden bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
+  <h2 class="text-base font-semibold text-gray-700 mb-4">
+    Visits Over Time
+    <span id="timeseriesLabel" class="ml-2 text-xs font-normal text-gray-400"></span>
+  </h2>
+  <div class="relative h-64">
+    <canvas id="timeseriesChart"></canvas>
+  </div>
+</div>
+
+<!-- ── Bottom row: Country table + Browsers + Referrers ── -->
+<div id="bottomRow" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+  <!-- Country table -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <h2 class="text-base font-semibold text-gray-700 mb-3">
+      Geographic Breakdown
+    </h2>
+    <div class="overflow-auto thin-scroll max-h-72">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-xs text-gray-400 uppercase border-b border-gray-100">
+            <th class="text-left pb-2">Country</th>
+            <th class="text-right pb-2">Clicks</th>
+            <th class="text-right pb-2">%</th>
+          </tr>
+        </thead>
+        <tbody id="countryTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Top Browsers -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <h2 class="text-base font-semibold text-gray-700 mb-3">Top Browsers</h2>
+    <div class="relative h-52">
+      <canvas id="browserChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Top Referrers -->
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <h2 class="text-base font-semibold text-gray-700 mb-3">Top Referrers</h2>
+    <ul id="referrerList" class="space-y-2 text-sm"></ul>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Chart instances (kept so we can destroy & recreate) ────────────────────
+let tsChart = null;
+let brChart = null;
+
+// ── Colour palette ─────────────────────────────────────────────────────────
+const PALETTE = [
+  "#6366f1","#8b5cf6","#ec4899","#f59e0b",
+  "#10b981","#3b82f6","#ef4444","#14b8a6",
+];
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function apiKey()    { return document.getElementById("apiKey").value.trim(); }
+function shortCode() { return document.getElementById("shortCode").value.trim(); }
+function period()    { return document.getElementById("period").value; }
+
+function setStatus(msg, isError = false) {
+  const el = document.getElementById("statusMsg");
+  el.textContent = msg;
+  el.className = isError
+    ? "text-sm text-red-500"
+    : "text-sm text-gray-500";
+}
+
+function showError(msg) {
+  const b = document.getElementById("errorBanner");
+  b.textContent = msg;
+  b.classList.remove("hidden");
+}
+
+function clearError() {
+  document.getElementById("errorBanner").classList.add("hidden");
+}
+
+async function apiFetch(path) {
+  const r = await fetch(`/api/v1/analytics/${path}`, {
+    headers: { "X-API-Key": apiKey() },
+  });
+  const json = await r.json();
+  if (!r.ok) {
+    const msg = json.errors?.[0]?.message ?? `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return json.data;
+}
+
+// ── Destroy helper ─────────────────────────────────────────────────────────
+function destroyChart(ref) {
+  if (ref) { ref.destroy(); }
+  return null;
+}
+
+// ── Main loader ────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  clearError();
+  const code = shortCode();
+  const days = period();
+
+  if (!apiKey()) { showError("Please enter your API key."); return; }
+  if (!code)     { showError("Please enter a short code."); return; }
+
+  setStatus("Loading…");
+
+  const btn = document.getElementById("loadBtn");
+  btn.disabled = true;
+
+  try {
+    const [tsData, cntData, brData, refData] = await Promise.all([
+      apiFetch(`${code}/timeseries?days=${days}`),
+      apiFetch(`${code}/countries`),
+      apiFetch(`${code}/browsers?limit=6`),
+      apiFetch(`${code}/referrers?limit=8`),
+    ]);
+
+    renderStatCards(tsData, cntData, brData, refData);
+    renderTimeseries(tsData, days);
+    renderCountryTable(cntData);
+    renderBrowserChart(brData);
+    renderReferrerList(refData);
+
+    // Show sections
+    ["statCards","timeseriesCard","bottomRow"].forEach(id =>
+      document.getElementById(id).classList.remove("hidden")
+    );
+
+    setStatus(`Loaded — ${tsData.total} clicks in last ${days} days`);
+
+  } catch (err) {
+    showError(err.message);
+    setStatus("Failed", true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Stat cards ─────────────────────────────────────────────────────────────
+function renderStatCards(ts, cnt, br, ref) {
+  document.getElementById("statTotal").textContent     = ts.total.toLocaleString();
+  document.getElementById("statCountries").textContent = cnt.items.length;
+  document.getElementById("statBrowser").textContent   = br.items[0]?.label  ?? "—";
+  document.getElementById("statReferrer").textContent  = ref.items[0]?.label ?? "—";
+}
+
+// ── Timeseries line chart ──────────────────────────────────────────────────
+function renderTimeseries(data, days) {
+  tsChart = destroyChart(tsChart);
+
+  document.getElementById("timeseriesLabel").textContent =
+    `${data.short_code} · last ${days} days`;
+
+  const labels = data.points.map(p => p.date);
+  const values = data.points.map(p => p.clicks);
+
+  const ctx = document.getElementById("timeseriesChart").getContext("2d");
+  tsChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Clicks",
+        data: values,
+        borderColor: PALETTE[0],
+        backgroundColor: PALETTE[0] + "22",
+        borderWidth: 2,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        fill: true,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { maxTicksLimit: 10, font: { size: 11 } },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1, font: { size: 11 } },
+        },
+      },
+    },
+  });
+}
+
+// ── Country table ──────────────────────────────────────────────────────────
+function renderCountryTable(data) {
+  const tbody = document.getElementById("countryTable");
+  tbody.innerHTML = "";
+
+  if (!data.items.length) {
+    tbody.innerHTML = `<tr><td colspan="3"
+      class="text-center text-gray-400 py-6 text-sm">No data yet</td></tr>`;
+    return;
+  }
+
+  data.items.forEach((item, i) => {
+    const pct = data.total > 0
+      ? ((item.count / data.total) * 100).toFixed(1)
+      : "0.0";
+
+    const row = document.createElement("tr");
+    row.className = "border-b border-gray-50 hover:bg-gray-50 transition";
+    row.innerHTML = `
+      <td class="py-2 flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full inline-block flex-shrink-0"
+              style="background:${PALETTE[i % PALETTE.length]}"></span>
+        <span class="truncate max-w-[120px]" title="${item.label}">${item.label}</span>
+      </td>
+      <td class="py-2 text-right font-medium">${item.count.toLocaleString()}</td>
+      <td class="py-2 text-right text-gray-400">${pct}%</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+// ── Browser doughnut chart ─────────────────────────────────────────────────
+function renderBrowserChart(data) {
+  brChart = destroyChart(brChart);
+
+  const ctx = document.getElementById("browserChart").getContext("2d");
+  brChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: data.items.map(i => i.label),
+      datasets: [{
+        data: data.items.map(i => i.count),
+        backgroundColor: PALETTE,
+        borderWidth: 2,
+        borderColor: "#fff",
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { font: { size: 11 }, boxWidth: 12, padding: 8 },
+        },
+      },
+    },
+  });
+}
+
+// ── Referrer list ──────────────────────────────────────────────────────────
+function renderReferrerList(data) {
+  const ul = document.getElementById("referrerList");
+  ul.innerHTML = "";
+
+  if (!data.items.length) {
+    ul.innerHTML = `<li class="text-gray-400 text-sm text-center py-4">No referrers yet</li>`;
+    return;
+  }
+
+  const max = data.items[0]?.count ?? 1;
+
+  data.items.forEach((item, i) => {
+    const pct = Math.round((item.count / max) * 100);
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div class="flex justify-between text-xs mb-0.5">
+        <span class="truncate max-w-[160px] font-medium"
+              title="${item.label}">${item.label}</span>
+        <span class="text-gray-400 ml-2 flex-shrink-0">${item.count.toLocaleString()}</span>
+      </div>
+      <div class="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div class="h-full rounded-full transition-all duration-500"
+             style="width:${pct}%; background:${PALETTE[i % PALETTE.length]}"></div>
+      </div>
+    `;
+    ul.appendChild(li);
+  });
+}
+
+// ── Allow Enter key to trigger load ───────────────────────────────────────
+["apiKey","shortCode"].forEach(id => {
+  document.getElementById(id).addEventListener("keydown", e => {
+    if (e.key === "Enter") loadDashboard();
+  });
+});
+</script>
+{% endblock %}
