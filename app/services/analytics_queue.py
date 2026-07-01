@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import Request
 from kombu.exceptions import KombuError
 
 from app.core.config import settings
-from app.tasks.analytics import process_click_event
+from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +27,18 @@ def enqueue_click_event(
     if not settings.analytics_queue_enabled:
         return False
 
+    payload: dict[str, Any] = {
+        "short_code": short_code,
+        "clicked_at": datetime.now(UTC).isoformat(),
+        "ip_address": _client_ip(request),
+        "user_agent": request.headers.get("User-Agent"),
+        "referrer": request.headers.get("Referer"),
+    }
+
     try:
-        process_click_event.apply_async(
-            kwargs={
-                "short_code": short_code,
-                "clicked_at": datetime.now(UTC).isoformat(),
-                "ip_address": _client_ip(request),
-                "user_agent": request.headers.get("User-Agent"),
-                "referrer": request.headers.get("Referer"),
-            },
+        celery_app.send_task(
+            "analytics.process_click_event",
+            kwargs=payload,
             ignore_result=True,
             queue="analytics",
         )

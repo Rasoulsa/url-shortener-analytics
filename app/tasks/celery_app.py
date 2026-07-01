@@ -32,3 +32,10 @@ celery_app.conf.update(
         "analytics.*": {"queue": "analytics"},
     },
 )
+
+celery_app.conf.beat_schedule = {
+    "flush-click-counters-every-30-seconds": {
+        "task": "analytics.flush_click_counters",
+        "schedule": settings.click_counter_flush_seconds,
+    },
+}

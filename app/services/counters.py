@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+PENDING_CLICK_COUNTER_SET_KEY = "analytics:click_counters:pending"
 CLICK_COUNTER_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -16,49 +19,21 @@ async def increment_link_click_counter(
     *,
     ttl_seconds: int = CLICK_COUNTER_TTL_SECONDS,
 ) -> int | None:
-    """
-    Increment the Redis click counter for a link.
+    short_code = short_code.strip()
 
-    Returns:
-        Current counter value on success.
-        None if Redis is unavailable or the increment fails.
+    if not short_code:
+        return None
 
-    Redis key:
-        link:{short_code}:clicks
-
-    Notes:
-        The TTL prevents stale counter keys from living forever if a link is
-        deleted or if Celery flushing is temporarily disabled.
-    """
     key = link_click_counter_key(short_code)
 
     try:
-        value = await redis.incr(key)
-        await redis.expire(key, ttl_seconds)
+        pipe = redis.pipeline(transaction=True)
+        pipe.incr(key)
+        pipe.sadd(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+        pipe.expire(key, ttl_seconds)
+
+        results: list[Any] = await pipe.execute()
     except RedisError:
         return None
 
-    return int(value)
-
-
-async def get_link_click_counter(
-    redis: Redis,
-    short_code: str,
-) -> int:
-    key = link_click_counter_key(short_code)
-
-    value = await redis.get(key)
-    if value is None:
-        return 0
-
-    if isinstance(value, bytes):
-        value = value.decode("utf-8")
-
-    return int(value)
-
-
-async def delete_link_click_counter(
-    redis: Redis,
-    short_code: str,
-) -> None:
-    await redis.delete(link_click_counter_key(short_code))
+    return int(results[0])
