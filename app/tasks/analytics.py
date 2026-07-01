@@ -9,13 +9,18 @@ from typing import Any, TypeVar
 from celery.utils.log import get_task_logger
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.link import Link
 from app.services.analytics import create_click_event
+from app.services.counters import (
+    CLICK_COUNTER_TTL_SECONDS,
+    PENDING_CLICK_COUNTER_SET_KEY,
+    link_click_counter_key,
+)
 from app.services.geoip import lookup_geoip
 from app.services.privacy import anonymize_ip
 from app.services.user_agent import parse_user_agent
@@ -284,14 +289,219 @@ def _record_redis_analytics(
     pipe.execute()
 
 
+def _redis_value_to_str(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+
+    return str(value)
+
+
+def _redis_value_to_int(value: Any) -> int | None:
+    try:
+        return int(_redis_value_to_str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _increment_link_click_count_by(
+    *,
+    short_code: str,
+    count: int,
+) -> bool:
+    """
+    Increment links.click_count by a flushed Redis counter value.
+
+    Returns False when the link no longer exists.
+    """
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(Link.id).where(Link.short_code == short_code),
+        )
+        link_id = result.scalar_one_or_none()
+
+        if link_id is None:
+            return False
+
+        await db.execute(
+            update(Link).where(Link.id == link_id).values(click_count=Link.click_count + count),
+        )
+        await db.commit()
+
+        return True
+
+
+def _get_pending_click_counter_short_codes(redis: Redis) -> list[str]:
+    raw_short_codes = redis.smembers(PENDING_CLICK_COUNTER_SET_KEY)
+
+    short_codes: set[str] = set()
+
+    for raw_short_code in raw_short_codes:
+        short_code = _redis_value_to_str(raw_short_code).strip()
+
+        if short_code:
+            short_codes.add(short_code)
+
+    return sorted(short_codes)
+
+
+def _restore_pending_click_counter(
+    redis: Redis,
+    *,
+    short_code: str,
+    count: int,
+) -> None:
+    """
+    Restore a Redis counter if database flush fails after GETDEL.
+
+    This keeps the flush task retryable for handled SQLAlchemy failures.
+    """
+    counter_key = link_click_counter_key(short_code)
+
+    pipe = redis.pipeline(transaction=True)
+    pipe.incrby(counter_key, count)
+    pipe.sadd(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+    pipe.expire(counter_key, CLICK_COUNTER_TTL_SECONDS)
+    pipe.execute()
+
+
+def _flush_single_click_counter(
+    redis: Redis,
+    *,
+    short_code: str,
+) -> dict[str, Any]:
+    counter_key = link_click_counter_key(short_code)
+
+    raw_count = redis.getdel(counter_key)
+
+    if raw_count is None:
+        redis.srem(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+
+        return {
+            "short_code": short_code,
+            "flushed": False,
+            "count": 0,
+            "reason": "counter_missing",
+        }
+
+    count = _redis_value_to_int(raw_count)
+
+    if count is None or count <= 0:
+        redis.srem(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+
+        return {
+            "short_code": short_code,
+            "flushed": False,
+            "count": 0,
+            "reason": "invalid_counter_value",
+        }
+
+    try:
+        updated = _run_async(
+            _increment_link_click_count_by(
+                short_code=short_code,
+                count=count,
+            ),
+        )
+    except SQLAlchemyError:
+        _restore_pending_click_counter(
+            redis,
+            short_code=short_code,
+            count=count,
+        )
+        raise
+
+    if not updated:
+        logger.warning(
+            "Skipping click counter flush; link not found for short_code=%s",
+            short_code,
+        )
+        redis.srem(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+
+        return {
+            "short_code": short_code,
+            "flushed": False,
+            "count": count,
+            "reason": "link_not_found",
+        }
+
+    if redis.exists(counter_key):
+        redis.sadd(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+    else:
+        redis.srem(PENDING_CLICK_COUNTER_SET_KEY, short_code)
+
+    return {
+        "short_code": short_code,
+        "flushed": True,
+        "count": count,
+        "reason": None,
+    }
+
+
+def _flush_pending_click_counters(redis: Redis | None = None) -> dict[str, Any]:
+    """
+    Flush Redis click counters into PostgreSQL links.click_count.
+
+    Uses Redis GETDEL so normal successful flushes do not double count.
+    If the database update fails, the removed counter value is restored and the
+    task is allowed to retry.
+    """
+    redis_client = redis or _sync_redis_client()
+    short_codes = _get_pending_click_counter_short_codes(redis_client)
+
+    flushed_links = 0
+    flushed_clicks = 0
+    skipped = 0
+    results: list[dict[str, Any]] = []
+
+    for short_code in short_codes:
+        result = _flush_single_click_counter(
+            redis_client,
+            short_code=short_code,
+        )
+        results.append(result)
+
+        if result["flushed"]:
+            flushed_links += 1
+            flushed_clicks += int(result["count"])
+        else:
+            skipped += 1
+
+    return {
+        "processed_short_codes": len(short_codes),
+        "flushed_links": flushed_links,
+        "flushed_clicks": flushed_clicks,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
 @celery_app.task(
     bind=True,
-    name="analytics.process_click_event",
-    autoretry_for=(SQLAlchemyError,),
+    name="analytics.flush_click_counters",
+    autoretry_for=(SQLAlchemyError, RedisError),
     retry_backoff=True,
     retry_jitter=True,
     retry_kwargs={"max_retries": 3},
 )
+def flush_click_counters(_self: Any) -> dict[str, Any]:
+    """
+    Flush pending Redis click counters into PostgreSQL.
+
+    This keeps the redirect path fast while making links.click_count
+    eventually consistent.
+    """
+    result = _flush_pending_click_counters()
+
+    logger.info(
+        "Flushed Phase 3 click counters: links=%s clicks=%s skipped=%s",
+        result["flushed_links"],
+        result["flushed_clicks"],
+        result["skipped"],
+    )
+
+    return result
+
+
 def process_click_event(
     _self: Any,
     *,
