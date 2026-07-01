@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, links, redirect
+from app.api.v1 import analytics, auth, links, redirect
 from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -46,6 +46,7 @@ app.add_middleware(
 # /api/* routes should be registered before /{short_code}
 app.include_router(auth.router)
 app.include_router(links.router)
+app.include_router(analytics.router)
 
 
 @app.get("/health", tags=["System"], summary="Health check")

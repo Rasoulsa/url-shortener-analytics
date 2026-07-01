@@ -502,6 +502,15 @@ def flush_click_counters(_self: Any) -> dict[str, Any]:
     return result
 
 
+@celery_app.task(
+    bind=True,
+    name="analytics.process_click_event",
+    ignore_result=True,
+    autoretry_for=(SQLAlchemyError, RedisError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+)
 def process_click_event(
     _self: Any,
     *,
