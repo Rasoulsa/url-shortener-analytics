@@ -169,7 +169,7 @@ async def link_analytics_breakdown(
         AnalyticsDimension,
         Query(
             description=(
-                "Aggregation dimension: country, city, browser, os, " "device_type, referrer"
+                "Aggregation dimension: country, city, browser, os, device_type, referrer"
             ),
         ),
     ] = "country",
