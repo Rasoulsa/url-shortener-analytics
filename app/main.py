@@ -7,7 +7,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.v1 import analytics, auth, links, redirect
+from app.api.v1 import analytics, analytics_dashboard, auth, links, redirect
 from app.core.config import settings
 from app.core.envelope import error_body, errors_body
 from app.core.exceptions import AppError
@@ -130,6 +130,7 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
 app.include_router(auth.router)
 app.include_router(links.router)
 app.include_router(analytics.router)
+app.include_router(analytics_dashboard.router)
 
 
 @app.get(
