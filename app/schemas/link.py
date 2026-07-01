@@ -37,12 +37,15 @@ class LinkCreate(BaseModel):
     )
     webhook_url: HttpUrl | None = Field(
         default=None,
-        description="URL to POST when the click threshold is reached.",
+        max_length=2048,
+        description="Optional URL to POST when the click threshold is reached.",
+        examples=["https://hooks.example.com/clicks"],
     )
     webhook_threshold: int | None = Field(
         default=None,
-        gt=0,
+        ge=1,
         description="Click count that triggers the webhook POST.",
+        examples=[1000],
     )
 
     model_config = {
@@ -84,6 +87,12 @@ class LinkOut(BaseModel):
     expires_at: datetime | None
     is_permanent: bool
     has_password: bool
+
+    webhook_url: str | None = None
+    webhook_threshold: int | None = None
+    webhook_fired: bool = False
+    webhook_fired_at: datetime | None = None
+
     created_at: datetime
     updated_at: datetime
 
@@ -101,10 +110,34 @@ class LinkUpdate(BaseModel):
     )
     webhook_url: HttpUrl | None = Field(
         default=None,
+        max_length=2048,
         description="New webhook URL. Set to null to remove.",
+        examples=["https://hooks.example.com/clicks"],
     )
     webhook_threshold: int | None = Field(
         default=None,
-        gt=0,
-        description="New webhook threshold click count.",
+        ge=1,
+        description="New webhook threshold click count. Set to null to remove.",
+        examples=[1000],
     )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "Update webhook settings",
+                    "value": {
+                        "webhook_url": "https://hooks.example.com/clicks",
+                        "webhook_threshold": 500,
+                    },
+                },
+                {
+                    "summary": "Disable webhook",
+                    "value": {
+                        "webhook_url": None,
+                        "webhook_threshold": None,
+                    },
+                },
+            ]
+        }
+    }

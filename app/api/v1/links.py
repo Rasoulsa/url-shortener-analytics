@@ -24,6 +24,10 @@ _LINK_EXAMPLE = {
     "expires_at": None,
     "is_permanent": False,
     "has_password": False,
+    "webhook_url": "https://hooks.example.com/clicks",
+    "webhook_threshold": 1000,
+    "webhook_fired": False,
+    "webhook_fired_at": None,
     "created_at": "2026-07-01T12:00:00Z",
     "updated_at": "2026-07-01T12:00:00Z",
 }
@@ -91,6 +95,10 @@ def _to_out(link: Link) -> LinkOut:
         expires_at=link.expires_at,
         is_permanent=link.is_permanent,
         has_password=link.password_hash is not None,
+        webhook_url=link.webhook_url,
+        webhook_threshold=link.webhook_threshold,
+        webhook_fired=link.webhook_fired,
+        webhook_fired_at=link.webhook_fired_at,
         created_at=link.created_at,
         updated_at=link.updated_at,
     )
@@ -161,11 +169,13 @@ async def create_link(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Alias '{payload.custom_alias}' is already taken.",
             )
+
         if not await reserve_code(payload.custom_alias):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Alias '{payload.custom_alias}' is being reserved.",
             )
+
         code = payload.custom_alias
     else:
         code = await generate_unique_code()
@@ -179,7 +189,10 @@ async def create_link(
         password_hash=hash_password(payload.password) if payload.password else None,
         webhook_url=str(payload.webhook_url) if payload.webhook_url else None,
         webhook_threshold=payload.webhook_threshold,
+        webhook_fired=False,
+        webhook_fired_at=None,
     )
+
     db.add(link)
     await db.commit()
     await db.refresh(link)
@@ -230,8 +243,10 @@ async def list_links(
     db: AsyncSession = Depends(get_db),
 ) -> Envelope[list[LinkOut]]:
     stmt = select(Link).where(Link.user_id == user.id)
+
     if cursor:
         stmt = stmt.where(Link.id < cursor)
+
     stmt = stmt.order_by(Link.id.desc()).limit(limit + 1)
 
     rows = list((await db.execute(stmt)).scalars().all())
@@ -286,6 +301,7 @@ async def get_link(
 
     if not link:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+
     return Envelope(data=_to_out(link))
 
 
@@ -306,7 +322,11 @@ async def get_link(
             "content": {
                 "application/json": {
                     "example": {
-                        "data": {**_LINK_EXAMPLE, "is_permanent": True},
+                        "data": {
+                            **_LINK_EXAMPLE,
+                            "is_permanent": True,
+                            "webhook_threshold": 500,
+                        },
                         "meta": None,
                         "errors": [],
                     }
@@ -337,11 +357,26 @@ async def update_link(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    webhook_config_changed = False
+
     for field, value in update_data.items():
-        setattr(link, field, str(value) if field == "webhook_url" and value else value)
+        if field == "webhook_url":
+            link.webhook_url = str(value) if value else None
+            webhook_config_changed = True
+        elif field == "webhook_threshold":
+            link.webhook_threshold = value
+            webhook_config_changed = True
+        else:
+            setattr(link, field, value)
+
+    if webhook_config_changed:
+        link.webhook_fired = False
+        link.webhook_fired_at = None
 
     await db.commit()
     await db.refresh(link)
+
     return Envelope(data=_to_out(link))
 
 

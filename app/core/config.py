@@ -48,11 +48,17 @@ class Settings(BaseSettings):
     hot_link_extended_ttl: int = 86400
     default_cache_ttl: int = 3600
 
-    # ── GeoIP / Analytics (Phase 3) ─────────────────────────
+    # ── GeoIP / Analytics  ─────────────────────────
     geoip_db_path: str = "/data/GeoLite2-City.mmdb"
     analytics_default_days: int = 7
     analytics_max_days: int = 90
     click_counter_flush_seconds: int = 30
+
+    # ── Webhook ─────────────────────────
+    webhook_secret: str = "dev-webhook-secret-change-me"
+    ebhook_timeout_seconds: float = 5.0
+    webhook_max_retries: int = 5
+    webhook_user_agent: str = "url-shortener-analytics-webhook/1.0"
 
     @property
     def database_url(self) -> str:
