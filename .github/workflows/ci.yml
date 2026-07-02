@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel stale in-flight runs when a new push arrives on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     name: Lint, Format, Type-check & Test
@@ -25,16 +30,26 @@ jobs:
         with:
           version: "latest"
 
+      - name: Cache uv store
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Lint with Ruff
-        run: uv run ruff check .
+      # Fastest checks first — fail early, save runner minutes.
 
       - name: Format check with Ruff
         run: uv run ruff format --check .
 
-      - name: Type check with mypy
+      - name: Lint with Ruff
+        run: uv run ruff check .
+
+      - name: Type-check with mypy
         run: uv run mypy app
 
       - name: Run tests

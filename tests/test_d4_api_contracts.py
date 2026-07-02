@@ -50,9 +50,9 @@ def test_openapi_contains_versioned_api_paths() -> None:
     body = client.get("/openapi.json").json()
     paths = body["paths"]
 
-    assert any(path.startswith("/api/v1/") for path in paths), (
-        "Expected at least one /api/v1/ path in OpenAPI"
-    )
+    assert any(
+        path.startswith("/api/v1/") for path in paths
+    ), "Expected at least one /api/v1/ path in OpenAPI"
 
 
 def test_openapi_documents_dashboard_analytics_paths() -> None:
