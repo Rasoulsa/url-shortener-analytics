@@ -51,6 +51,9 @@ duplicate impossible in practice.
 - Stable: new inserts never cause drift
 - `meta.next_cursor` in envelope tells client where to continue
 
+> Phase 4 verified this contract across all listing endpoints and standardized
+> the `meta` shape (`next_cursor`, `limit`). See section 10.
+
 ---
 
 ## 3. Response Envelope `{data, meta, errors}`
@@ -62,6 +65,9 @@ Benefits:
 - One response handler on the frontend for every endpoint
 - Pagination always lives in `meta`, never mixed into `data`
 - `errors` array supports multiple validation messages at once
+
+> Phase 4 audited every endpoint for envelope consistency and added unified
+> exception handlers so error responses share the same shape. See section 10.
 
 ---
 
@@ -472,11 +478,178 @@ affecting query performance on recent data.
 
 ---
 
-9. Phase 3 Trade-offs Summary
-Decision	Chosen approach	Key reason
-GeoIP lookup timing	Raw IP for lookup, anonymized for storage	Accuracy + privacy
-GeoIP failure mode	Fail open, return NULL	Click recording must never fail due to GeoIP
-Counter flush atomicity	GETDEL + restore-on-failure	No double-count, no lost clicks
-Stats API shape	Four focused endpoints + dimension enum	One query per endpoint, client fetches only what it needs
-Stats data source	PostgreSQL clicks table	Full enriched data; Redis counters are hot-path only
-clicks table scaling	Indexes only for now	Partitioning is future work when rows reach millions
+## 9. Phase 3 Trade-offs Summary
+
+| Decision | Chosen approach | Key reason |
+|---|---|---|
+| GeoIP lookup timing | Raw IP for lookup, anonymized for storage | Accuracy + privacy |
+| GeoIP failure mode | Fail open, return NULL | Click recording must never fail due to GeoIP |
+| Counter flush atomicity | GETDEL + restore-on-failure | No double-count, no lost clicks |
+| Stats API shape | Four focused endpoints + dimension enum | One query per endpoint, client fetches only what it needs |
+| Stats data source | PostgreSQL clicks table | Full enriched data; Redis counters are hot-path only |
+| clicks table scaling | Indexes only for now | Partitioning is future work when rows reach millions |
+
+---
+
+## 10. Phase 4: Public API, Webhooks, and Dashboard
+
+Phase 4 turns the internal service into a documented public product: a
+versioned API with a stable contract, click-threshold webhooks, and an
+analytics dashboard.
+
+### 10.1 Explicit URL Versioning under `/api/v1/`
+
+**Decision:** All public API routes live under `/api/v1/`.
+
+**Why:**
+
+- Gives clients a stable, explicit contract
+- A future breaking change can ship under `/api/v2/` without disrupting existing integrations
+- Keeps public API routes clearly separated from UI routes (`/dashboard`) and the redirect hot path (`/{short_code}`)
+
+**Trade-off accepted:** Slightly longer URLs. URL-based versioning is simple,
+visible, and easy for clients to reason about compared to header-based
+versioning.
+
+### 10.2 OpenAPI / Swagger as the Living API Contract
+
+**Decision:** Lean on FastAPI's generated OpenAPI schema as the source of API
+documentation, enriched with router tags, summaries, descriptions, response
+models, and the API-key security scheme.
+
+```text
+/docs        Swagger UI
+/redoc       ReDoc
+/openapi.json Raw schema
+```
+
+**Why:**
+
+- Documentation stays in sync with the code because it is generated from the same Pydantic models and route signatures
+- No separate, manually-maintained API spec to drift out of date
+- Response model examples make the envelope shape discoverable in Swagger
+
+**Trade-off accepted**: Requires disciplined use of tags, summaries, and
+response models on every route to keep the generated docs high quality.
+
+### 10.3 Envelope Audit and Unified Exception Handling
+
+**Decision**: Finalize the `{ data, meta, errors }` envelope across every
+endpoint and route all errors through unified exception handlers.
+
+```json
+{
+  "data": null,
+  "meta": {},
+  "errors": [
+    { "code": "not_found", "message": "Link not found", "field": null }
+  ]
+}
+```
+Handled consistently: `400`, `401`, `404`, `410`, `422`, `429`, `500`.
+
+**Why:**
+
+- Clients and the dashboard use one parser for success and error responses
+- Machine-readable code fields make error handling programmatic
+- Validation errors can carry a field for form feedback
+
+**Trade-off accepted**: Small wrapping overhead on simple responses. The
+consistency benefit outweighs the extra bytes.
+
+### 10.4 Webhook Delivery via Celery, Fired from the Counter Flush
+
+**Decision**: Fire click-threshold webhooks from the
+`analytics.flush_click_counters` Beat task (where `click_count` is authoritatively
+updated), delivered by a separate Celery task — not from the redirect path.
+
+```text
+flush_click_counters (Beat)
+  → click_count updated from Redis
+  → threshold crossed and webhook_fired == false?
+        set webhook_fired = true      # single-flight guard
+        enqueue webhook delivery task
+  → webhook task POSTs signed payload with retry/backoff
+```
+
+**Why:**
+
+- The redirect hot path only does `INCR`; it must never make outbound HTTP calls
+- The flush task is the natural place to observe threshold crossings because it owns the durable `click_count` update
+- Delivery in its own task isolates slow/failing receivers from analytics processing
+
+**Trade-off accepted**: Webhooks are eventually consistent — they fire shortly
+after the threshold is crossed (on the next flush), not during the exact
+redirect that crossed it. Acceptable because thresholds are a notification
+feature, not a real-time guarantee.
+
+### 10.5 Webhook Idempotency via `webhook_fired`
+
+**Decision**: Persist a `webhook_fired` boolean on the link and set it to
+`true` before enqueueing delivery, inside the same flush transaction that
+detects the crossing.
+
+**Why:**
+
+- Guarantees the threshold event is scheduled at most once even if flushes overlap or the task is retried
+- Simple, durable, and easy to reason about compared to an external dedup store
+
+**Trade-off accepted**: This design supports a single threshold event per link.
+Multiple thresholds, repeatable events, or an event log would require a richer
+schema — deferred as future work.
+
+### 10.6 HMAC-Signed Webhook Payloads
+
+**Decision**: Sign each webhook body with HMAC SHA-256 using a configured
+secret, sent as `X-Webhook-Signature: sha256=<hex>`.
+
+**Why:**
+
+- Lets receivers verify authenticity and integrity of the payload
+- Follows a widely-understood webhook security convention (GitHub-style)
+- Cheap to compute and easy for receivers to validate
+
+**Trade-off accepted**: Receivers must implement signature verification and the
+service must manage a webhook secret. Standard cost for secure webhooks.
+
+### 10.7 Multi-Link Comparison Aggregated in the Backend
+
+**Decision**: Provide a dedicated comparison endpoint that returns aligned,
+zero-filled series for multiple short codes over one shared window, rather than
+having the dashboard fetch each link separately and align in the browser.
+
+```json
+{
+  "data": {
+    "labels": ["2026-06-28", "2026-06-29"],
+    "series": [
+      { "short_code": "demo",  "values": [5, 12] },
+      { "short_code": "promo", "values": [0, 3] }
+    ]
+  }
+}
+```
+
+**Why:**
+
+- Date alignment and zero-filling of missing days are done once, correctly, on the server
+- The chart consumes a single, ready-to-render payload
+- Avoids N separate client requests and client-side merge logic
+
+**Trade-off accepted**: More backend aggregation logic. Worth it for correct,
+consistent chart data.
+
+### 10.8 Dashboard with Jinja2 + Chart.js (Country Table, No Map)
+
+**Decision**: Build `/dashboard` as server-rendered Jinja2 HTML with Chart.js
+for visualizations, and present the geographic breakdown as a table.
+
+**Why:**
+
+- No separate frontend build pipeline; FastAPI serves both API and dashboard
+- Chart.js is sufficient for line and comparison charts
+- A country table satisfies the requirement without a map library, external map API keys, or handling of incomplete GeoIP data
+- The dashboard reuses the Phase 3 analytics endpoints, keeping the UI thin
+
+**Trade-off accepted**: Less interactive than a full SPA and less visual than a
+map. Appropriate for this project’s scope; a richer frontend is future work.

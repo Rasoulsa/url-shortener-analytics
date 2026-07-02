@@ -602,4 +602,198 @@ curl "http://localhost:8000/api/v1/analytics/links/{short_code}/breakdown?dimens
 - No soft delete yet.
 - Single-region deployment only.
 
-## Phase 4 — *(to be completed)*
+## Phase 4 — Public API, Webhooks & Analytics Dashboard
+
+**Goal:** Turn the service into a documented public product: a versioned API
+with a stable contract, OpenAPI/Swagger docs, cursor-pagination verified across
+listings, click-threshold webhooks delivered asynchronously, and an analytics
+dashboard that visualizes the Phase 3 stats.
+
+### Branch plan
+
+Worked through Phase 4 in ordered feature branches, each merged via PR to `main`:
+
+```text
+feat/d4-openapi-docs    — OpenAPI/Swagger polish + formalize /api/v1 versioning
+feat/d4-api-envelope    — response envelope audit + cursor pagination verify
+feat/d4-webhooks        — click-threshold webhooks (HMAC, Celery retry, idempotent)
+feat/d4-dashboard-api   — aggregation endpoints (multi-link compare) for charts
+feat/d4-dashboard-ui    — Jinja2 + Chart.js dashboard at /dashboard
+test/d4-tests           — cross-cutting tests (envelope, webhooks, dashboard)
+ci/d4-pipeline          — keep CI green (ruff, ruff-format, mypy, pytest)
+docs/d4-final           — final documentation pass across all docs
+```
+
+### What I built
+
+**OpenAPI docs & versioning (`feat/d4-openapi-docs`)**
+- Formalized all public routes under `/api/v1/` as the stable API surface.
+- Added router tags, summaries, descriptions, and response-model examples so
+  `/docs` (Swagger) and `/redoc` render a clean, self-describing API.
+- Documented the API-key security scheme so protected endpoints show the auth
+  requirement in Swagger.
+- `/openapi.json` is generated directly from the Pydantic models and route
+  signatures, so docs stay in sync with the code.
+
+**Envelope audit & pagination (`feat/d4-api-envelope`)**
+- Audited every endpoint to guarantee the `{ data, meta, errors }` envelope,
+  including error paths.
+- Added/confirmed unified exception handlers mapping `400`, `401`, `404`,
+  `410`, `422`, `429`, and `500` into the same envelope shape with a
+  machine-readable `code`.
+- Verified cursor pagination `meta` shape (`next_cursor`, `limit`) is
+  consistent across link listings.
+
+**Webhooks (`feat/d4-webhooks`)**
+- Added `webhook_url`, `webhook_threshold`, and `webhook_fired` handling on links.
+- Wired threshold detection into `analytics.flush_click_counters` — the task
+  that owns the authoritative `click_count` update — so webhooks fire off the
+  background flush, never the redirect hot path.
+- `webhook_fired` is set to `true` inside the same flush transaction that
+  detects the crossing, *before* enqueueing delivery — a single-flight
+  idempotency guard so the event is scheduled at most once per link.
+- Delivery runs in a dedicated Celery task with retry/backoff for transient
+  failures (timeouts, connection errors, receiver `5xx`).
+- Payloads are signed with HMAC SHA-256 and sent as
+  `X-Webhook-Signature: sha256=<hex>` so receivers can verify authenticity.
+
+**Dashboard data (`feat/d4-dashboard-api`)**
+- Added a multi-link comparison endpoint returning aligned, zero-filled series
+  for several short codes over one shared window, so the chart receives a
+  single ready-to-render payload.
+- Reused the Phase 3 stats endpoints (`timeseries`, `breakdown`) for the line
+  chart, country table, top referrers, and top browsers.
+
+**Dashboard UI (`feat/d4-dashboard-ui`)**
+- Built `/dashboard` with Jinja2 templates and Chart.js.
+- Views: 7/30/90-day visits line chart, geographic breakdown as a country
+  **table**, top referrers, top browsers, and a multi-link comparison chart.
+- The UI stays thin — it calls the `/api/v1/analytics/*` endpoints and renders
+  the results; all aggregation stays in the backend.
+
+**Tests (`test/d4-tests`)**
+- Added cross-cutting tests for the response envelope contract, webhook
+  behavior, and dashboard endpoints to cover the Phase 4 code paths.
+
+**CI (`ci/d4-pipeline`)**
+- Kept the pipeline green across `ruff`, `ruff-format`, `mypy`, and `pytest`
+  with the new code.
+
+### Key decisions
+
+**Explicit `/api/v1/` versioning**
+URL-based versioning gives clients a stable, visible contract and leaves room
+for `/api/v2/` later without breaking existing integrations.
+
+**OpenAPI as the living contract**
+Generating docs from the code (models + route signatures) avoids a separate
+spec that drifts. Tags, summaries, and response models keep Swagger useful.
+
+**Webhooks fire from the flush task, not the redirect**
+The redirect only does `INCR`; it must never make outbound HTTP calls. The
+flush task owns the durable `click_count`, making it the correct place to
+observe threshold crossings. Trade-off: webhooks are eventually consistent —
+they fire on the next flush after the threshold, not during the exact click.
+
+**`webhook_fired` idempotency guard**
+Setting the flag before enqueueing, inside the flush transaction, guarantees a
+single delivery per link even if flushes overlap or the task retries.
+
+**HMAC-signed payloads**
+A GitHub-style `sha256=` signature lets receivers verify authenticity and
+integrity cheaply. Receivers must implement verification — a standard cost.
+
+**Backend multi-link aggregation**
+Aligning dates and zero-filling missing days once on the server produces a
+correct, single chart payload and avoids N client requests plus browser-side
+merge logic.
+
+**Jinja2 + Chart.js, country table (no map)**
+No separate frontend build pipeline; FastAPI serves both API and dashboard. A
+country table satisfies the requirement without a map library, external map
+API keys, or handling incomplete GeoIP data.
+
+### Validation performed
+
+**Webhook end-to-end**
+- Ran a local receiver on `http://0.0.0.0:9999/webhook`:
+```bash
+python - <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        print("HEADERS:", dict(self.headers))
+        print("BODY:", self.rfile.read(n).decode())
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+HTTPServer(("0.0.0.0", 9999), H).serve_forever()
+PY
+```
+- Created a link with `webhook_url` and `webhook_threshold=3`, drove clicks
+  past the threshold, and confirmed the receiver printed the signed payload
+  (`event`, `short_code`, `click_count`, `threshold`, `occurred_at`) with the
+  `X-Webhook-Signature` header. Confirmed it fired exactly once (idempotency).
+
+**Dashboard & stats**
+- Loaded `/dashboard` and verified the 7/30/90-day line chart, country table,
+  top referrers, top browsers, and multi-link comparison chart render from the
+  analytics endpoints.
+- Spot-checked `timeseries` for short code `webhooktest1782936524` showing
+  clicks on `2026-07-01`.
+- Confirmed comparison and analytics endpoints return `404 Link not found` for
+  unknown codes (e.g. `othercode`).
+
+**API docs & envelope**
+- Verified `/docs`, `/redoc`, and `/openapi.json` render the versioned routes,
+  auth scheme, and response models.
+- Confirmed success and error responses share the `{ data, meta, errors }`
+  shape.
+
+**CI**
+- `ruff check`, `ruff format --check`, `mypy`, and `pytest` all green.
+
+### Documentation updated
+- `README.md` — flipped Phase 4 features to done, added Phase 4 section
+  (Public API, dashboard, webhooks, branch map), webhook usage example, updated
+  limitations.
+- `docs/PHASE4_FINAL.md` — **new** — consolidated Phase 4 summary.
+- `docs/API.md` — added Dashboard Data (multi-link compare) and Webhooks
+  sections, documented webhook fields in the create response, added `/dashboard`.
+- `docs/ARCHITECTURE.md` — added the webhook firing flow, a Public API &
+  Dashboard architecture section (envelope, cursor pagination, dashboard layer),
+  webhook task in the registered list, and webhook failure rows.
+- `docs/DESIGN_DECISIONS.md` — added the Phase 4 decisions (versioning, OpenAPI,
+  envelope audit, webhook trigger point, idempotency, HMAC, backend
+  aggregation, dashboard) plus a Phase 4 trade-offs summary.
+- `docs/ANALYTICS.md` / `docs/ASSUMPTIONS.md` / `docs/LOCAL_DEVELOPMENT.md` —
+  Phase 4 dashboard/webhook notes and validation steps.
+
+### Blockers / notes
+- **Ruff version mismatch between `uv` and pre-commit.** `uv run ruff format`
+  formatted files with Ruff `0.15.20`, but the `ruff-format` pre-commit hook
+  reformatted them again with an old pinned `v0.4.4`, causing a CI format loop.
+  Fixed by aligning the pre-commit hook `rev` to `v0.15.20` and cleaning the
+  pre-commit cache.
+- **`ruff format --check` vs `ruff format`.** The `--check` command only reports
+  what *would* change; it does not modify files. Running the plain
+  `ruff format` was required to actually fix `tests/test_d4_api_contracts.py`.
+- **`httpx` + `starlette.testclient` deprecation warning** surfaced in the test
+  run; noted for a follow-up but not blocking (tests pass).
+- Coverage tuning on Phase 4 code paths was intentionally deferred as a later
+  maintenance task; functional Phase 4 work is complete.
+
+### Current limitations after Phase 4
+- Single threshold event per link (no multiple thresholds or repeatable events yet).
+- `clicks` table is indexed but not partitioned yet.
+- GeoIP city coverage depends on MaxMind data; some IPs return country only.
+- Dashboard uses a country table rather than a map visualization.
+- No JWT/OAuth yet (API-key auth only).
+- No email verification yet.
+- No soft delete yet.
+- Single-region deployment only.
+
+### Project status
+Phase 4 complete. The service now provides a documented, versioned public API
+with a consistent envelope and cursor pagination, reliable asynchronous
+click-threshold webhooks, and an analytics dashboard — closing out the planned
+scope for the project.

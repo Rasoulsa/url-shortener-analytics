@@ -45,6 +45,34 @@
   successful flushes never double-count. If the database update fails after
   `GETDEL`, the counter value is restored and the task retries with
   exponential backoff.
+
+- **Webhook delivery is async:** Webhook delivery never blocks redirects.
+  If the receiver is slow or unavailable, Celery retries with backoff.
+  The redirect path only performs `INCR`; threshold detection and delivery
+  happen in the background flush and worker.
+
+- **Webhook fires at most once per link:** The `webhook_fired` flag is set
+  inside the flush transaction before enqueueing delivery. This guarantees a
+  single threshold event per link regardless of flush overlap or task retries.
+  Resetting a webhook requires explicitly clearing `webhook_fired` and
+  setting a new threshold.
+
+- **Webhook receiver must verify HMAC:** The service signs webhook payloads
+  with HMAC SHA-256 (`X-Webhook-Signature: sha256=<hex>`). Receivers are
+  responsible for verifying the signature before trusting the payload.
+
+- **Dashboard reuses Phase 3 analytics API:** The `/dashboard` UI consumes
+  the existing `timeseries` and `breakdown` endpoints. No separate analytics
+  store is required for the dashboard.
+
+- **Country table is sufficient for geographic breakdown:** A map
+  visualization is not required per the project specification. The dashboard
+  uses a sortable country table.
+
+- **Multi-link comparison is zero-filled:** The comparison endpoint
+  zero-fills missing days so all series share the same date labels. Missing
+  days reflect zero clicks, not missing data.
+
 ## Infrastructure Assumptions
 
 - PostgreSQL is the source of truth for users, links, and click events.
@@ -64,35 +92,40 @@
 
 | Limitation | Reason | Future Fix |
 |---|---|---|
-| `clicks` table not partitioned | Out of scope for Phase 3 | `RANGE` partition by `clicked_at` monthly |
+| `clicks` table not partitioned | Out of scope for evaluation | `RANGE` partition by `clicked_at` monthly |
 | GeoIP city missing for some IPs | MaxMind data coverage | No fix — infrastructure IPs are expected to lack city data |
-| Webhooks on click thresholds not implemented | Future work | Fire on `links.click_count` threshold crossing |
-| Analytics dashboard not implemented | Phase 4 | Chart.js UI over stats API |
+| Single webhook threshold per link | Phase 4 scope | Multiple thresholds or repeatable events via event log |
+| Dashboard uses country table, not map | Sufficient per requirements | Add map library if visual geographic breakdown is needed |
 | No JWT / OAuth | Scope | Add refresh tokens + OAuth2 providers |
 | No email verification | Scope | Add verification + confirmation flow |
 | No soft delete | Scope | Add `deleted_at` tombstone column |
 | Single region | Scope | Redis Cluster + read replicas |
+| Test coverage tuning deferred | Time constraint | Continue as a maintenance branch |
 
 ## Failure Behavior
 
 ```text
-┌────────────────────────────────────┬──────────────────────────────────────────────┐
-│ Failure                            │ Behavior                                     │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis metadata cache unavailable   │ Fall back to PostgreSQL lookup               │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis click counter unavailable    │ Fall back to PostgreSQL click increment      │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis rate limiter unavailable     │ Fail open and allow request                  │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Celery broker unavailable          │ Log warning; redirect still succeeds         │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Celery worker unavailable          │ Tasks may queue; redirect still succeeds     │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ GeoIP database missing             │ Click stored with country/city = NULL        │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ PostgreSQL unavailable             │ API management and cache misses fail normally│
-└────────────────────────────────────┴──────────────────────────────────────────────┘
+┌────────────────────────────────────┬───────────────────────────────────────────----───┐
+│ Failure                            │ Behavior                                         │
+├────────────────────────────────────┼──────────────────────────────────────────----────┤
+│ Redis metadata cache unavailable   │ Fall back to PostgreSQL lookup                   │
+├────────────────────────────────────┼──────────────────────────────────────────----────┤
+│ Redis click counter unavailable    │ Fall back to PostgreSQL click increment          │
+├────────────────────────────────────┼──────────────────────────────────────────----────┤
+│ Redis rate limiter unavailable     │ Fail open and allow request                      │
+├────────────────────────────────────┼───────────────────────────────────────────----───┤
+│ Celery broker unavailable          │ Log warning; redirect still succeeds             │
+├────────────────────────────────────┼───────────────────────────────────────────----───┤
+│ Celery worker unavailable          │ Tasks may queue; redirect still succeeds         │
+├────────────────────────────────────┼──────────────────────────────────────────----────┤
+│ GeoIP database missing             │ Click stored with country/city = NULL            │
+├────────────────────────────────────┼────────────────────────────────────────────----──┤
+│ Webhook receiver slow / down       │ Celery retries with backoff; redirect unaffected │
+├────────────────────────────────────┼───────────────────────────────────────────----───┤
+│ Webhook permanently failing        │ Logged; webhook_fired stays true (no spam)       │
+├────────────────────────────────────┼────────────────────────────────────────────----──┤
+│ PostgreSQL unavailable             │ API management and cache misses fail normally    │
+└────────────────────────────────────┴───────────────────────────────────────────----───┘
 ```
 
 ## Additional Considerations
@@ -158,9 +191,42 @@ Redirects should not fail just because:
 
 The redirect response should still succeed after the link is resolved.
 
-### Bloom Filter (Future)
+### Webhooks
 
-A Bloom filter in Redis could pre-check code existence before the full cache lookup, reducing misses for invalid/bot codes. Not implemented—overkill for evaluation scale, worth noting for production.
+Phase 4 adds click-threshold webhook support built on top of the Phase 3
+analytics flush pipeline.
+
+Key assumptions carried through implementation:
+
+- Threshold detection runs inside `analytics.flush_click_counters`, which
+  owns the authoritative `click_count` update after `GETDEL`.
+- The `webhook_fired` flag is set before the delivery task is enqueued,
+  inside the same flush operation that detects the crossing. This gives a
+  single-flight guarantee even when multiple flush runs overlap.
+- Delivery is a separate Celery task with retry/backoff so slow or failing
+  receivers are isolated from analytics processing.
+- Payloads are signed with HMAC SHA-256 so receivers can verify authenticity.
+- A webhook event fires once per link per threshold configuration. More
+  complex behaviors (repeatable events, multiple thresholds, event logs)
+  are deferred as future work.
+
+### Dashboard
+
+The analytics dashboard at `/dashboard` is built with Jinja2 and Chart.js
+and consumes the Phase 3 stats API.
+
+Key assumptions:
+
+- Aggregation stays in the backend. The dashboard UI is thin and fetches
+  pre-aggregated data from the API.
+- The multi-link comparison endpoint zero-fills missing days so all series
+  align on the same labels regardless of when each link was created.
+- A country **table** is used for geographic breakdown. No external map
+  library or API key is required.
+- GeoIP data quality limitations (city missing for CDN/infra IPs) also
+  affect the country table. This is expected and documented.
+
+Production website: `www.matinrayaneharyan.ir`
 
 ### Click Table Partitioning (Future)
 
