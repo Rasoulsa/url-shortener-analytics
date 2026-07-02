@@ -139,6 +139,11 @@
 
 {% block scripts %}
 <script>
+// ── Wait for dashboard.js to load, then initialize ──────────────────────────
+window.addEventListener("DOMContentLoaded", function() {
+  bindApiKeyInput("apiKey");
+});
+
 // ── Chart instances (kept so we can destroy & recreate) ────────────────────
 let tsChart = null;
 let brChart = null;
@@ -150,7 +155,7 @@ const PALETTE = [
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function apiKey()    { return document.getElementById("apiKey").value.trim(); }
+function apiKey()    { return getApiKey() || document.getElementById("apiKey").value.trim(); }
 function shortCode() { return document.getElementById("shortCode").value.trim(); }
 function period()    { return document.getElementById("period").value; }
 
