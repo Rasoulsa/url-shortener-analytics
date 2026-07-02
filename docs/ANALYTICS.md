@@ -36,16 +36,20 @@ FastAPI redirect handler
   └─ enqueue analytics.process_click_event(short_code, ip, ua, referrer)
                                            │
                                            ▼
-                                Celery worker (queue: analytics)
-                                  ├─ parse User-Agent  → browser, os, device
-                                  ├─ GeoIP lookup on RAW ip → country, city
-                                  ├─ anonymize ip      → ip_anonymized (stored)
-                                  ├─ INSERT clicks row (PostgreSQL)
-                                  └─ update lightweight Redis analytics counters
-
                                 Celery Beat (every ~30s)
                                   └─ analytics.flush_click_counters
-                                       └─ GETDEL Redis counter → links.click_count
+                                       ├─ GETDEL Redis counter → links.click_count
+                                       └─ if click_count >= webhook_threshold
+                                            and webhook_fired == false:
+                                              set webhook_fired = true
+                                              enqueue webhooks.deliver task
+
+                                Celery worker (queue: default)
+                                  └─ webhooks.deliver
+                                       ├─ build payload (event, short_code,
+                                       │  click_count, threshold, occurred_at)
+                                       ├─ sign: X-Webhook-Signature sha256=<hmac>
+                                       └─ POST to webhook_url (retry/backoff)
 ```
 
 **Key privacy rule:** GeoIP lookup uses the **raw IP** for accuracy, but only
@@ -339,11 +343,141 @@ Redirect UX is always prioritized; analytics is eventually consistent.
 
 ## 9. Completion Checklist
 
+### Phase 3
 - [x] Click-event schema (`feat/d3-click-schema`)
 - [x] Enrichment helpers: GeoIP, UA, privacy (`feat/d3-analytics-enrichment`)
 - [x] Non-blocking click recording (`feat/d3-click-recording`)
 - [x] Redis→PostgreSQL counter flush (`feat/d3-counter-flush`)
 - [x] Stats API (`feat/d3-stats-api`)
 - [x] Documentation (`docs/d3-analytics`)
-- [ ] Webhooks on thresholds (future)
-- [ ] Dashboard (Phase 4)
+
+### Phase 4
+- [x] Webhooks on click thresholds (`feat/d4-webhooks`)
+- [x] Dashboard — line chart, country table, referrers, browsers (`feat/d4-dashboard-ui`)
+- [x] Multi-link comparison chart (`feat/d4-dashboard-api` + `feat/d4-dashboard-ui`)
+- [x] Final analytics documentation (`docs/d4-documentation`)
+
+
+## 10. Phase 4 — Dashboard & Webhooks
+
+### Dashboard
+
+Phase 4 adds a browser-based analytics dashboard at `/dashboard` that
+consumes the Phase 3 stats API directly.
+
+Production website: `www.matinrayaneharyan.ir`
+
+**Dashboard views:**
+
+| View | Endpoint used | Notes |
+|---|---|---|
+| Visits line chart (7/30/90 days) | `timeseries` | Switchable day window |
+| Geographic breakdown | `breakdown?dimension=country` | Table, no map required |
+| Top referrers | `breakdown?dimension=referrer` | Top 10 by default |
+| Top browsers | `breakdown?dimension=browser` | Top 10 by default |
+| Multi-link comparison | `compare?codes=...&days=...` | Zero-filled aligned series |
+
+The dashboard is built with Jinja2 server-rendered HTML and Chart.js
+visualizations. All aggregation stays in the backend — the UI stays thin.
+
+**Validate the dashboard locally:**
+
+```bash
+open http://localhost:8000/dashboard
+```
+
+---
+
+### Webhooks
+
+Phase 4 adds click-threshold webhook support on top of the analytics flush
+pipeline.
+
+**New link fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `webhook_url` | string (URL) | Destination for the threshold event |
+| `webhook_threshold` | integer | Click count required before firing |
+| `webhook_fired` | boolean | Idempotency guard; `true` after the event fires |
+
+**Delivery behavior:**
+
+- Threshold detection runs inside `analytics.flush_click_counters` — the
+  task that owns the authoritative `click_count` update.
+- `webhook_fired` is set to `true` before enqueueing delivery so the event
+  is scheduled at most once per link even if flushes overlap.
+- Delivery runs in a separate Celery task with retry/backoff for transient
+  failures (timeouts, connection errors, receiver `5xx`).
+- Payloads are signed with HMAC SHA-256.
+- Webhook delivery never touches the redirect hot path.
+
+**Example payload delivered to `webhook_url`:**
+
+```json
+{
+  "event": "link.click_threshold_reached",
+  "short_code": "demo",
+  "click_count": 100,
+  "threshold": 100,
+  "occurred_at": "2026-07-02T00:00:00Z"
+}
+```
+
+**Example signature header:**
+
+```http
+X-Webhook-Signature: sha256=<hmac_hex_digest>
+```
+
+**Validate webhooks locally:**
+
+```bash
+# 1. Start a local receiver
+python - <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        print("HEADERS:", dict(self.headers))
+        print("BODY:", self.rfile.read(n).decode())
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+HTTPServer(("0.0.0.0", 9999), H).serve_forever()
+PY
+
+# 2. Create a link with webhook config
+curl -X POST http://localhost:8000/api/v1/links \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "long_url": "https://example.com",
+    "custom_alias": "webhooktest",
+    "webhook_url": "http://0.0.0.0:9999/webhook",
+    "webhook_threshold": 3
+  }'
+
+# 3. Drive clicks past the threshold
+for i in 1 2 3 4; do
+  curl -s -o /dev/null http://localhost:8000/webhooktest
+done
+
+# 4. Wait for the counter flush and check the receiver output
+sleep 35
+# Receiver terminal should print the payload exactly once
+
+# 5. Confirm webhook_fired is true in the database
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT short_code, click_count, webhook_fired FROM links WHERE short_code = 'webhooktest';"
+```
+
+**Updated failure behavior table:**
+
+| Failure | Behavior |
+|---|---|
+| Redis cache down | Redirect falls back to PostgreSQL |
+| Redis counter down | Click increment falls back to PostgreSQL |
+| Celery broker/worker down | Redirect still succeeds; task queued/skipped |
+| GeoIP DB missing | Click stored with `country`/`city` = NULL |
+| Webhook receiver slow/down | Celery retries with backoff; redirect unaffected |
+| Webhook permanently failing | Logged; `webhook_fired` stays `true` (no spam) |
+| PostgreSQL down | Management API + cache misses fail normally |

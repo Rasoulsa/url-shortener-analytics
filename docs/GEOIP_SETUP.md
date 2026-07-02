@@ -95,7 +95,7 @@ curl -i \
   -H "X-Forwarded-For: 81.2.69.142" \
   -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36" \
   -H "Referer: https://google.com" \
-  http://localhost:8000/YOUR_SHORT_CODE
+  http://localhost:8001/YOUR_SHORT_CODE
 
 docker compose exec db psql -U postgres -d urlshort -c \
 "SELECT ip_anonymized, country, city, browser, os, device_type
@@ -111,6 +111,12 @@ ip_anonymized | country        | city   | browser | os      | device_type
 
 Note that the **stored** IP is anonymized (`81.2.69.0`) even though the
 **lookup** used the full IP (`81.2.69.142`) — see [Privacy](#privacy) below.
+
+> **Dashboard:** Country data populated here flows directly into the
+> geographic breakdown table on `/dashboard`. If GeoIP is absent, the country
+> column in the dashboard table will be empty or show NULL — all other
+> dashboard views (timeseries, referrers, browsers, comparison chart) are
+> unaffected.
 
 ---
 

@@ -6,7 +6,8 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 A production-minded URL shortening service with intelligent Redis
-caching, non-blocking analytics collection, and a live dashboard.
+caching, non-blocking analytics collection, a public versioned API,
+webhook notifications, and a live analytics dashboard.
 
 > **Build log:** [docs/JOURNAL.md](docs/JOURNAL.md) — daily decisions and trade-offs.
 
@@ -22,6 +23,7 @@ caching, non-blocking analytics collection, and a live dashboard.
 7. [Technologies](#7-technologies)
 8. [Assumptions & Limitations](#8-assumptions--limitations)
 9. [Project Structure](#9-project-structure)
+10. [Public API, Webhooks & Dashboard](#10-public-api-webhooks--dashboard)
 
 ---
 
@@ -58,8 +60,9 @@ A service that shortens, redirects, and analyzes:
 - [x] Separate Redis logical DBs for app keys, Celery broker, and Celery results
 - [x] Full async GeoIP + UA analytics pipeline *(Phase 3)*
 - [x] Time-series stats API *(Phase 3)*
-- [ ] Webhooks on click thresholds *(Phase 3/future)*
-- [ ] Analytics dashboard *(Phase 4)*
+- [x] Full OpenAPI / Swagger documentation *(Phase 4)*
+- [x] Webhooks on click thresholds — HMAC-signed, Celery retry/backoff *(Phase 4)*
+- [x] Analytics dashboard — Chart.js line charts, country table, referrers, browsers, multi-link compare *(Phase 4)*
 
 ---
 
@@ -569,13 +572,12 @@ See [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for the full list.
 
 
 **Current limitations:**
-  - Full click-event analytics enrichment is still Phase 3 work.
-  - Redis counters are not durably flushed to PostgreSQL on a schedule yet.
   - `clicks` table is not partitioned yet.
-  - No JWT/OAuth yet.
+  - No JWT/OAuth yet (API-key auth only).
   - No email verification yet.
   - No soft delete yet.
   - Single-region deployment only.
+  - Dashboard uses a country table rather than a map visualization.
 
 **Failure behavior:**
 ```text
@@ -620,6 +622,77 @@ url-shortener-analytics/
 ├── uv.lock
 └── README.md
 ```
+---
+
+## 10. Public API, Webhooks & Dashboard
+
+Phase 4 completes the public-facing product: a documented versioned API,
+click-threshold webhooks, and an interactive analytics dashboard.
+
+Full details → [docs/PHASE4_FINAL.md](docs/PHASE4_FINAL.md)
+
+### Public API
+
+| Feature | Status |
+|---------|--------|
+| Full OpenAPI / Swagger documentation (`/docs`, `/redoc`) | ✅ |
+| URL versioning under `/api/v1/` | ✅ |
+| Consistent response envelope `{ data, meta, errors }` | ✅ |
+| Cursor-based pagination for link listings | ✅ |
+| Webhook support on click threshold | ✅ |
+| Unified exception handling (400, 401, 404, 410, 422, 429, 500) | ✅ |
+
+### Analytics Dashboard
+
+Dashboard route:
+```text
+http://localhost:8000/dashboard
+```
+
+| Feature | Status |
+|---------|--------|
+| Line chart — visits over last 7 / 30 / 90 days | ✅ |
+| Geographic breakdown by country (table) | ✅ |
+| Top referrers | ✅ |
+| Top browsers | ✅ |
+| Multi-link comparison on a single chart | ✅ |
+
+Built with Jinja2 templates + Chart.js. A country table is used for the
+geographic breakdown (no map required per project scope).
+
+### Webhooks
+
+Webhook delivery is asynchronous and reliable:
+
+- Fires when `click_count` crosses `webhook_threshold`
+- Wired into the analytics counter flush pipeline
+- HMAC SHA-256 signed payloads
+- Celery task delivery with retry/backoff
+- `webhook_fired` idempotency guard prevents duplicate delivery
+
+### Phase 4 Branches
+
+| Branch | Purpose |
+|--------|---------|
+| `feat/d4-openapi-docs` | OpenAPI/Swagger docs and `/api/v1` versioning |
+| `feat/d4-api-envelope` | Response envelope and cursor pagination verification |
+| `feat/d4-webhooks` | Click-threshold webhook support |
+| `feat/d4-dashboard-api` | Dashboard aggregation endpoints |
+| `feat/d4-dashboard-ui` | Jinja2 + Chart.js dashboard |
+| `test/d4-tests` | Cross-cutting Phase 4 tests |
+| `ci/d4-pipeline` | CI validation (Ruff, mypy, pytest) |
+| `docs/d4-documentation` | Final documentation |
+
+### Final Validation
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy app
+uv run pytest -q
+```
+
+---
 
 ## License
 MIT — see [LICENSE](LICENSE)

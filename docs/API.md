@@ -16,8 +16,10 @@
 2. [Links](#links)
 3. [Redirect](#redirect)
 4. [Analytics](#analytics)
-5. [Rate Limiting](#rate-limiting)
-6. [System](#system)
+5. [Dashboard Data](#dashboard-data)
+6. [Webhooks](#webhooks)
+7. [Rate Limiting](#rate-limiting)
+8. [System](#system)
 
 ---
 
@@ -86,6 +88,9 @@ curl -X POST http://localhost:8000/api/v1/links \
     "expires_at": "2026-12-31T23:59:59Z",
     "is_permanent": false,
     "click_count": 0,
+    "webhook_url": "https://hooks.example.com/notify",
+    "webhook_threshold": 100,
+    "webhook_fired": false,
     "created_at": "2026-06-28T10:00:00Z"
   },
   "meta": null,
@@ -483,6 +488,189 @@ Full analytics pipeline details → [docs/ANALYTICS.md](docs/ANALYTICS.md)
 
 ---
 
+## Dashboard Data
+
+These endpoints power the analytics dashboard at `/dashboard`. They require
+`X-API-Key` authentication and are scoped to links owned by the authenticated
+user. Where possible they reuse the Phase 3 analytics API.
+
+### GET `/api/v1/analytics/compare`
+
+Compares click activity for multiple links over the same time window. Used by
+the multi-link comparison chart on the dashboard. Missing days are zero-filled
+so every series aligns to the same date labels.
+
+**Query parameters:**
+```text
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| codes | comma-separated string | — | Short codes to compare (required) |
+| days | int (1–365) | 30 | Rolling window in days |
+```
+
+```bash
+curl "http://localhost:8000/api/v1/analytics/compare?codes=demo,promo&days=30" \
+  -H "X-API-Key: YOUR_KEY"
+```
+
+**Response 200:**
+```json
+{
+  "data": {
+    "labels": [
+      "2026-06-28",
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01"
+    ],
+    "series": [
+      {
+        "short_code": "demo",
+        "values": [5, 12, 8, 17]
+      },
+      {
+        "short_code": "promo",
+        "values": [0, 3, 6, 9]
+      }
+    ]
+  },
+  "meta": {
+    "days": 30,
+    "from": "2026-06-01T00:00:00+00:00",
+    "to":   "2026-07-01T00:00:00+00:00"
+  },
+  "errors": []
+}
+```
+
+**Errors:**
+- `404` if any requested short code is not found or not owned by the user.
+
+> The dashboard also consumes the existing Phase 3 endpoints for its charts and
+> tables:
+> - Line chart → `GET /api/v1/analytics/links/{short_code}/timeseries`
+> - Country table → `GET /api/v1/analytics/links/{short_code}/breakdown?dimension=country`
+> - Top referrers → `GET /api/v1/analytics/links/{short_code}/breakdown?dimension=referrer`
+> - Top browsers → `GET /api/v1/analytics/links/{short_code}/breakdown?dimension=browser`
+
+---
+
+## Webhooks
+
+A link can be configured with a webhook that fires once when its click count
+crosses a configured threshold. Delivery is asynchronous (Celery) so the
+redirect hot path is never blocked by external HTTP calls.
+
+### Configuration
+
+Set `webhook_url` and `webhook_threshold` when creating or updating a link:
+
+```bash
+curl -X PATCH "http://localhost:8000/api/v1/links/demo" \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook_url": "https://hooks.example.com/notify",
+    "webhook_threshold": 100
+  }'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `webhook_url` | string (URL) | Destination that receives the POST event |
+| `webhook_threshold` | int | Click count required before the webhook fires |
+| `webhook_fired` | bool (read-only) | Idempotency guard; `true` after the event has fired |
+
+### Delivery flow
+
+```text
+Redirect increments click counter
+        │
+        ▼
+Counter flush persists click_count to PostgreSQL
+        │
+        ▼
+click_count >= webhook_threshold  and  webhook_fired == false
+        │
+        ▼
+Set webhook_fired = true  (idempotency guard)
+        │
+        ▼
+Celery task POSTs signed payload to webhook_url (retry/backoff on failure)
+```
+
+### Request the receiver gets
+
+**Method:** `POST`
+**Headers:**
+```http
+Content-Type: application/json
+X-Webhook-Event: link.click_threshold_reached
+X-Webhook-Signature: sha256=<hmac_hex_digest>
+```
+
+**Body:**
+```json
+{
+  "event": "link.click_threshold_reached",
+  "short_code": "demo",
+  "click_count": 100,
+  "threshold": 100,
+  "occurred_at": "2026-07-02T00:00:00Z"
+}
+```
+
+### Verifying the signature
+
+The signature is an HMAC SHA-256 of the raw request body using your configured
+webhook secret. Compute the same digest on your side and compare:
+
+```python
+import hashlib
+import hmac
+
+def verify(secret: str, raw_body: bytes, signature_header: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    received = signature_header.removeprefix("sha256=")
+    return hmac.compare_digest(expected, received)
+```
+
+### Reliability
+
+- Delivery runs in a Celery task with retry/backoff for transient failures
+  (timeouts, connection errors, receiver `5xx`).
+- The `webhook_fired` flag ensures the threshold event is delivered only once
+  per link.
+- A failing or slow receiver never affects redirect latency.
+
+### Local testing
+
+Run a simple receiver locally:
+
+```bash
+python - <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        print("PATH:", self.path)
+        print("HEADERS:", dict(self.headers))
+        print("BODY:", body.decode())
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+HTTPServer(("0.0.0.0", 9999), Handler).serve_forever()
+PY
+```
+
+Point the link's `webhook_url` at `http://<your-host>:9999/webhook`, then drive
+clicks past the threshold and watch the receiver terminal print the payload.
+
+---
+
 #### Rate limiter failure behavior
 
 If Redis is unavailable, rate limiting fails open.
@@ -512,12 +700,17 @@ Response 200:
 }
 ```
 
+### GET `/dashboard`
+
+Serves the HTML analytics dashboard (Jinja2 + Chart.js). Renders the 7/30/90-day
+visits line chart, country breakdown table, top referrers, top browsers, and the
+multi-link comparison chart.
+
+```bash
+open http://localhost:8000/dashboard
+```
+
 ### Notes for Docker local development
 
 If Docker Compose maps the API to port 8001, replace 8000 with 8001 in all
 examples above.
-```bash
-curl -i http://localhost:8001/health
-curl "http://localhost:8001/api/v1/analytics/links/demo/timeseries?days=7" \
-  -H "X-API-Key: YOUR_KEY"
-```

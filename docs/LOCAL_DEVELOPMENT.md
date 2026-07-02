@@ -437,6 +437,7 @@ Expected tasks:
 ```text
 analytics.process_click_event
 analytics.flush_click_counters
+webhooks.send_webhook_event
 health.ping
 ```
 
@@ -775,3 +776,290 @@ coverage is added).
 | Redis counter flush fails (DB down) | Counter value restored to Redis; task retries with backoff; no clicks lost |
 | Celery Beat unavailable | Redis counters keep accumulating but stop flushing to Postgres; `links.click_count` becomes stale until beat recovers |
 | Stats API queries fail | Returns standard `{errors}` envelope; redirect and click recording are unaffected (stats reads are decoupled from the write path) |
+
+---
+
+## Phase 4 Validation
+
+Phase 4 adds OpenAPI docs, the response envelope audit, click-threshold
+webhooks, and the analytics dashboard. Use the commands below to validate
+the full Phase 4 feature set against your local Docker stack.
+
+---
+
+### Verify OpenAPI docs
+
+```bash
+curl -s http://localhost:8001/openapi.json | python3 -m json.tool | head -30
+```
+
+Expected: a valid JSON document with `openapi`, `info`, and `paths` keys.
+
+Open the interactive docs in a browser:
+
+```text
+Swagger UI → http://localhost:8001/docs
+ReDoc      → http://localhost:8001/redoc
+```
+
+Expected: all `/api/v1/*` routes visible with tags, summaries, and request/response examples. The API-key security scheme should appear on protected endpoints.
+
+### Verify the response envelope
+
+Confirm every endpoint returns `{ data, meta, errors }` on success and on error.
+
+**Success — create a link:**
+
+```bash
+curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"long_url": "https://example.com/envelope-test", "custom_alias": "envelopetest"}' \
+  | python3 -m json.tool
+```
+
+Expected keys: `data`, `meta`, `errors`.
+
+**Error — unknown short code:**
+
+```bash
+curl -s http://localhost:8001/api/v1/links/doesnotexist \
+  -H "X-API-Key: $API_KEY" \
+  | python3 -m json.tool
+```
+
+Expected:
+
+```json
+{
+  "data": null,
+  "meta": {},
+  "errors": [
+    { "code": "not_found", "message": "Link not found", "field": null }
+  ]
+}
+```
+
+**Error — missing API key:**
+
+```bash
+curl -s http://localhost:8001/api/v1/links | python3 -m json.tool
+```
+
+Expected `401` with `"code": "unauthorized"` in `errors`.
+
+**Error — validation failure:**
+
+```bash
+curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"long_url": "not-a-url"}' \
+  | python3 -m json.tool
+```
+
+Expected `422` with `"code": "validation_error"` in `errors`.
+
+### Verify cursor pagination
+
+```bash
+# First page
+curl -s "http://localhost:8001/api/v1/links?limit=2" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+Expected: `meta.next_cursor` present if more results exist, `meta.limit` set to 2.
+
+```bash
+# Next page using cursor from previous response
+CURSOR=<next_cursor value>
+curl -s "http://localhost:8001/api/v1/links?cursor=${CURSOR}&limit=2" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+Expected: different set of links, `meta.next_cursor` null if last page.
+
+### Validate the analytics dashboard
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8001/dashboard
+```
+Expected: 200.
+
+Open in a browser:
+
+```bash
+open http://localhost:8001/dashboard
+```
+
+Expected views:
+
+```text
+✓ Visits line chart (7 / 30 / 90 day toggle)
+✓ Geographic breakdown — country table
+✓ Top referrers table
+✓ Top browsers table
+✓ Multi-link comparison chart
+```
+If the charts are empty, fire some test clicks first (see Phase 3
+enrichment section above) and wait ~30 seconds for the counter flush.
+
+### Validate the multi-link comparison endpoint
+```bash
+ALIAS1="comptest1$(date +%s)"
+ALIAS2="comptest2$(date +%s)"
+
+# Create two links
+curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"long_url\": \"https://example.com/a\", \"custom_alias\": \"${ALIAS1}\"}" \
+  | python3 -m json.tool
+
+curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"long_url\": \"https://example.com/b\", \"custom_alias\": \"${ALIAS2}\"}" \
+  | python3 -m json.tool
+
+# Fire some clicks on both
+for i in 1 2 3; do curl -s -o /dev/null "http://localhost:8001/${ALIAS1}"; done
+for i in 1 2;   do curl -s -o /dev/null "http://localhost:8001/${ALIAS2}"; done
+
+# Wait for enrichment
+sleep 5
+
+# Fetch comparison data
+curl -s "http://localhost:8001/api/v1/analytics/compare?codes=${ALIAS1},${ALIAS2}&days=7" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+Expected: `data.labels` with date strings and `data.series` with two entries,
+one per short code, with `values` arrays of equal length (missing days
+zero-filled).
+
+**Error — unknown code in compare:**
+
+```bash
+curl -s "http://localhost:8001/api/v1/analytics/compare?codes=${ALIAS1},doesnotexist&days=7" \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+Expected `404` with `"code": "not_found"` in `errors`.
+
+### Validate webhooks end-to-end
+
+**Step 1 — Start a local receiver**
+
+Open a second terminal and run:
+
+```bash
+python - <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n)
+        print("\n--- Webhook received ---")
+        print("PATH   :", self.path)
+        print("SIG    :", self.headers.get("X-Webhook-Signature"))
+        print("EVENT  :", self.headers.get("X-Webhook-Event"))
+        print("BODY   :", body.decode())
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *_): pass
+
+HTTPServer(("0.0.0.0", 9999), Handler).serve_forever()
+PY
+```
+
+**Step 2 — Create a link with webhook config**
+
+```bash
+WHTEST="whtest$(date +%s)"
+
+curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"long_url\": \"https://example.com/webhook-test\",
+    \"custom_alias\": \"${WHTEST}\",
+    \"webhook_url\": \"http://host.docker.internal:9999/webhook\",
+    \"webhook_threshold\": 3
+  }" | python3 -m json.tool
+```
+> On Linux, replace `host.docker.internal` with your host machine’s LAN IP
+> `(e.g. 192.168.x.x)`. On macOS/Windows, `host.docker.internal` resolves
+> correctly from inside Docker containers.
+
+**Step 3 — Drive clicks past the threshold**
+
+```bash
+for i in 1 2 3 4; do
+  curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8001/${WHTEST}"
+done
+```
+Expected: four `302` responses.
+
+**Step 4 — Wait for the flush and check the receiver**
+
+```bash
+sleep 35
+```
+
+Expected in the receiver terminal:
+
+```text
+--- Webhook received ---
+PATH   : /webhook
+SIG    : sha256=<hmac_hex_digest>
+EVENT  : link.click_threshold_reached
+BODY   : {"event": "link.click_threshold_reached", "short_code": "...",
+          "click_count": 3, "threshold": 3, "occurred_at": "..."}
+```
+
+**Step 5 — Confirm idempotency**
+
+Drive more clicks past the threshold:
+
+```bash
+for i in 1 2 3; do
+  curl -s -o /dev/null "http://localhost:8001/${WHTEST}"
+done
+sleep 35
+```
+
+Expected: receiver does not print a second payload. The webhook fires
+exactly once per link.
+
+**Step 6 — Confirm webhook_fired in the database**
+
+```bash
+docker compose exec db psql -U postgres -d urlshort -c \
+"SELECT short_code, click_count, webhook_threshold, webhook_fired
+ FROM links WHERE short_code = '${WHTEST}';"
+```
+
+Expected:
+
+```text
+short_code | click_count | webhook_threshold | webhook_fired
+-----------+-------------+-------------------+--------------
+whtest...  |           7 |                 3 | t
+```
+
+### Run the Phase 4 test suite
+
+```bash
+uv run pytest tests/test_d4_envelope_contracts.py -v
+uv run pytest tests/test_d4_webhook_contracts.py -v
+uv run pytest tests/test_d4_dashboard_ui.py -v
+```
+
+Or run everything together:
+
+```bash
+uv run pytest -v
+```
+Expected: all tests passing (136 at last count).

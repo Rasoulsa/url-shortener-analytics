@@ -51,6 +51,14 @@ Phase 3 adds the Redis and Celery foundation:
 - Celery Beat flushes Redis click counters to PostgreSQL every ~30 seconds
 - Time-series stats API exposes per-link breakdowns by day, country, browser, OS, device, and referrer
 
+Phase 4 completes the public product surface:
+
+- Versioned public API under `/api/v1/` with OpenAPI/Swagger docs
+- Consistent response envelope `{ data, meta, errors }` and unified exception handling
+- Cursor-based pagination for link listings
+- Click-threshold webhooks delivered asynchronously via Celery (HMAC-signed, retry/backoff, idempotent)
+- Analytics dashboard at `/dashboard` (Jinja2 + Chart.js) reusing the Phase 3 analytics API
+
 ## 2. Layered Architecture
 
 ```text
@@ -179,6 +187,7 @@ Registered tasks:
 ```text
 analytics.process_click_event     — enrich + persist one click row (per redirect)
 analytics.flush_click_counters    — Redis→PostgreSQL counter flush (Beat, ~30s)
+webhooks.deliver                  — POST signed threshold event to webhook_url
 health.ping                       — worker liveness check
 ```
 The worker is not an HTTP service, so its healthcheck must use Celery inspection, not `curl`.
@@ -336,6 +345,33 @@ geoip_info    = lookup_geoip(ip_address)   # raw IP → accurate lookup
 ip_anonymized = anonymize_ip(ip_address)   # 8.8.8.8 → 8.8.8.0 (stored)
 ```
 
+**Webhook firing — Phase 4 flow:**
+```text
+[Celery Beat — flush_click_counters, every ~30s]
+  → GETDEL link:{short_code}:clicks
+  → UPDATE links SET click_count = click_count + N
+  → for each affected link with webhook_url set:
+        if click_count >= webhook_threshold and webhook_fired == false:
+            UPDATE links SET webhook_fired = true        # idempotency guard (single-flight)
+            enqueue webhooks.deliver(short_code, click_count, threshold)
+
+[Celery worker — webhooks.deliver]
+  → build payload { event, short_code, click_count, threshold, occurred_at }
+  → sign body: X-Webhook-Signature = sha256=HMAC(secret, body)
+  → POST payload to webhook_url
+  → on transient failure (timeout / connection / 5xx): retry with backoff
+  → on permanent failure: log and stop (webhook_fired stays true)
+```
+
+**Idempotency rule:** `webhook_fired` is set to `true` before enqueueing
+delivery, inside the same flush transaction that observes the threshold
+crossing. This guarantees the threshold event is scheduled at most once, even if
+multiple counter flushes run close together.
+
+**Non-blocking rule:** Webhook delivery never runs on the redirect hot path.
+The redirect only performs `INCR`; threshold detection and delivery happen in
+the background flush + worker.
+
 ## 7. Rate Limiting Architecture
 
 Rate limiting is implemented as FastAPI middleware before route handling.
@@ -373,26 +409,100 @@ request
   → else add current request and continue
 ```
 
-### 8. Cache and Queue Failure Behavior
+## 8. Public API & Dashboard Architecture (Phase 4)
+
+### Response envelope
+
+All `/api/v1/*` responses are normalized into a single envelope so clients,
+tests, and the dashboard parse responses consistently:
+
+```json
+{
+  "data": {},
+  "meta": {},
+  "errors": []
+}
+```
+
+- Success → payload in `data`, pagination/context in `meta`, `errors: []`
+- Failure → `data: null`, structured objects in `errors`
+
+Unified exception handlers map application and framework errors to this shape:
 
 ```text
-┌────────────────────────────────────┬──────────────────────────────────────────────┐
-│ Component failure                  │ Expected behavior                            │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis metadata cache unavailable   │ Fall back to PostgreSQL lookup               │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis click counter unavailable    │ Fall back to PostgreSQL click increment      │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Redis rate limiter unavailable     │ Fail open and allow request                  │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Celery broker unavailable          │ Log warning; redirect still succeeds         │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ Celery worker unavailable          │ Tasks may queue; redirect still succeeds     │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ GeoIP database missing             │ Click stored with country/city = NULL        │
-├────────────────────────────────────┼──────────────────────────────────────────────┤
-│ PostgreSQL unavailable             │ API management and cache misses fail normally│
-└────────────────────────────────────┴──────────────────────────────────────────────┘
+┌────────┬──────────────────────┬─────────────────────────────────────────────┐
+│ Status │ Code                 │ Meaning                                     │
+├────────┼──────────────────────┼─────────────────────────────────────────────┤
+│ 400    │ bad_request          │ Malformed request                           │
+│ 401    │ unauthorized         │ Missing / invalid API key                   │
+│ 404    │ not_found            │ Resource does not exist / not owned         │
+│ 410    │ gone                 │ Link expired                                │
+│ 422    │ validation_error     │ Pydantic validation failed                  │
+│ 429    │ rate_limit_exceeded  │ Rate limit hit                              │
+│ 500    │ internal_server_error│ Unexpected error                            │
+└────────┴──────────────────────┴─────────────────────────────────────────────┘
+```
+
+### Cursor pagination
+
+Link listings use keyset/cursor pagination instead of offset pagination. The
+cursor is the last seen link `id`; results are ordered by descending `id`.
+
+```text
+GET /api/v1/links?limit=20                 → newest 20, meta.next_cursor = last id
+GET /api/v1/links?cursor=41&limit=20       → items with id < 41
+```
+
+Benefits: stable pages while rows are inserted/deleted, and no expensive
+high-offset scans as the table grows. The cursor is treated as opaque by clients.
+
+### Dashboard layer
+
+```text
+Browser (/dashboard)
+  → Jinja2-rendered HTML shell + Chart.js
+  → fetch() calls to /api/v1/analytics/* with the user's API key
+        · timeseries        → line chart (7 / 30 / 90 days)
+        · breakdown=country → country table
+        · breakdown=referrer→ top referrers
+        · breakdown=browser → top browsers
+        · compare           → multi-link comparison chart
+```
+
+Design intent: aggregation stays in the backend (consistent windows,
+zero-filled days, GeoIP handling). The dashboard UI stays thin and reuses the
+Phase 3 analytics endpoints wherever possible. A country **table** is used for
+the geographic breakdown — no map dependency is required for this project scope.
+
+Production website: `www.matinrayaneharyan.ir`
+
+---
+
+
+### 9. Cache and Queue Failure Behavior
+
+```text
+┌────────────────────────────────────┬──────────────────────────────────────────--------────┐
+│ Component failure                  │ Expected behavior                                    │
+├────────────────────────────────────┼───────────────────────────────────────────--------───┤
+│ Redis metadata cache unavailable   │ Fall back to PostgreSQL lookup                       │
+├────────────────────────────────────┼───────────────────────────────────────────--------───┤
+│ Redis click counter unavailable    │ Fall back to PostgreSQL click increment              │
+├────────────────────────────────────┼───────────────────────────────────────────--------───┤
+│ Redis rate limiter unavailable     │ Fail open and allow request                          │
+├────────────────────────────────────┼───────────────────────────────────────────--------───┤
+│ Celery broker unavailable          │ Log warning; redirect still succeeds                 │
+├────────────────────────────────────┼──────────────────────────────────────────--------────┤
+│ Celery worker unavailable          │ Tasks may queue; redirect still succeeds             │
+├────────────────────────────────────┼────────────────────────────────────────────--------──┤
+│ GeoIP database missing             │ Click stored with country/city = NULL                │
+├────────────────────────────────────┼────────────────────────────────────────────--------──┤
+│ Webhook receiver slow / down       │ Celery retries with backoff; redirect unaffected     │
+├────────────────────────────────────┼────────────────────────────────────────────--------──┤
+│ Webhook permanently failing        │ Logged; webhook_fired stays true (no duplicate spam) │
+├────────────────────────────────────┼──────────────────────────────────────────--------────┤
+│ PostgreSQL unavailable             │ API management and cache misses fail normally        │
+└────────────────────────────────────┴────────────────────────────────────────--------──────┘
 ```
 
 Design principle:
@@ -401,7 +511,7 @@ Redirect availability should not depend on optional analytics processing.
 ```
 PostgreSQL remains the source of truth. Redis and Celery improve performance and scalability but should not make simple redirects fragile.
 
-## 9. Operational Validation
+## 10. Operational Validation
 
 ### Check service health
 ```bash
@@ -520,6 +630,6 @@ docker compose exec db psql -U postgres -d urlshort -c \
 "SELECT short_code, click_count FROM links WHERE short_code = '${ALIAS}';"
 ```
 
-## 10. Design Decisions
+## 11. Design Decisions
 see:
 → [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)
