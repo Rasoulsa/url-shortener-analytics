@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 from celery.utils.log import get_task_logger
 
 from app.core.config import settings
