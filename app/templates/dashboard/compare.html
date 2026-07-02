@@ -97,6 +97,11 @@
 
 {% block scripts %}
 <script>
+// ── Wait for dashboard.js to load, then initialize ──────────────────────────
+window.addEventListener("DOMContentLoaded", function() {
+  bindApiKeyInput("apiKey");
+});
+
 let cmpChart = null;
 
 const PALETTE = [
@@ -105,7 +110,7 @@ const PALETTE = [
   "#f97316","#84cc16",
 ];
 
-function apiKey() { return document.getElementById("apiKey").value.trim(); }
+function apiKey() { return getApiKey() || document.getElementById("apiKey").value.trim(); }
 function period() { return document.getElementById("period").value; }
 
 function setStatus(msg, err = false) {
