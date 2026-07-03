@@ -1,5 +1,22 @@
-{% extends "dashboard/_base.html" %}
+{% extends "base.html" %}
 {% block title %}Compare Links{% endblock %}
+
+{% block extra_head %}
+<script>
+  // Auth gate — runs immediately, before body renders.
+  (function () {
+    try {
+      const raw = localStorage.getItem("urlshortener_session");
+      const session = raw ? JSON.parse(raw) : null;
+      if (!session || !session.api_key) {
+        window.location.replace("/?auth=required");
+      }
+    } catch (e) {
+      window.location.replace("/?auth=required");
+    }
+  })();
+</script>
+{% endblock %}
 
 {% block content %}
 
@@ -12,28 +29,19 @@
 
 <!-- ── Controls ── -->
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-    <div class="sm:col-span-1">
-      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
-        API Key
-      </label>
-      <input id="apiKey" type="password" placeholder="your-api-key"
-             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
-                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-    </div>
-
-    <div class="sm:col-span-1">
+    <div>
       <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
         Short Codes
-        <span class="normal-case font-normal">(comma-separated, max 10)</span>
+        <span class="normal-case font-normal text-gray-400">(comma-separated, max 10)</span>
       </label>
       <input id="codes" type="text" placeholder="abc123, def456, ghi789"
              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
                     focus:outline-none focus:ring-2 focus:ring-indigo-400" />
     </div>
 
-    <div class="sm:col-span-1">
+    <div>
       <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
         Period
       </label>
@@ -97,9 +105,10 @@
 
 {% block scripts %}
 <script>
-// ── Wait for dashboard.js to load, then initialize ──────────────────────────
-window.addEventListener("DOMContentLoaded", function() {
-  bindApiKeyInput("apiKey");
+// ── Init: focus codes input, pre-fill key indicator ──────────────────────────
+window.addEventListener("load", function () {
+  const codes = document.getElementById("codes");
+  if (codes) codes.focus();
 });
 
 let cmpChart = null;
@@ -110,10 +119,9 @@ const PALETTE = [
   "#f97316","#84cc16",
 ];
 
-function apiKey() { return getApiKey() || document.getElementById("apiKey").value.trim(); }
 function period() { return document.getElementById("period").value; }
 
-function setStatus(msg, err = false) {
+function setCompareStatus(msg, err = false) {
   const el = document.getElementById("statusMsg");
   el.textContent = msg;
   el.className = err ? "text-sm text-red-500" : "text-sm text-gray-500";
@@ -134,18 +142,19 @@ async function loadCompare() {
 
   const rawCodes = document.getElementById("codes").value;
   const codes = rawCodes.split(",").map(s => s.trim()).filter(Boolean);
-  const days   = period();
+  const days  = period();
+  const key   = getApiKey();
 
-  if (!apiKey())        { showError("Please enter your API key."); return; }
-  if (!codes.length)    { showError("Please enter at least one short code."); return; }
+  if (!key)            { showError("No API key found. Please log in again."); return; }
+  if (!codes.length)   { showError("Please enter at least one short code."); return; }
   if (codes.length > 10){ showError("Maximum 10 codes allowed."); return; }
 
-  setStatus("Loading…");
+  setCompareStatus("Loading…");
 
   try {
     const r = await fetch(
       `/api/v1/analytics/compare?codes=${codes.join(",")}&days=${days}`,
-      { headers: { "X-API-Key": apiKey() } },
+      { headers: { "X-API-Key": key } },
     );
     const json = await r.json();
 
@@ -161,11 +170,11 @@ async function loadCompare() {
       document.getElementById(id).classList.remove("hidden")
     );
 
-    setStatus(`Comparing ${data.series.length} link(s) · ${days}-day window`);
+    setCompareStatus(`Comparing ${data.series.length} link(s) · ${days}-day window`);
 
   } catch (err) {
     showError(err.message);
-    setStatus("Failed", true);
+    setCompareStatus("Failed", true);
   }
 }
 
@@ -175,9 +184,7 @@ function renderCompareChart(data, days) {
   document.getElementById("chartTitle").textContent =
     `Daily Visits — Last ${days} Days`;
 
-  // All series share the same date labels (same period)
   const labels = data.series[0]?.points.map(p => p.date) ?? [];
-
   const datasets = data.series.map((s, i) => ({
     label: s.short_code,
     data: s.points.map(p => p.clicks),
@@ -211,14 +218,8 @@ function renderCompareChart(data, days) {
         },
       },
       scales: {
-        x: {
-          grid: { display: false },
-          ticks: { maxTicksLimit: 10, font: { size: 11 } },
-        },
-        y: {
-          beginAtZero: true,
-          ticks: { stepSize: 1, font: { size: 11 } },
-        },
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } } },
       },
     },
   });
@@ -229,22 +230,22 @@ function renderSummaryTable(data, days) {
   tbody.innerHTML = "";
 
   data.series.forEach((s, i) => {
-    const clicks = s.points.map(p => p.clicks);
-    const peak   = Math.max(...clicks, 0);
-    const peakDay = clicks.indexOf(peak) >= 0
-      ? s.points[clicks.indexOf(peak)]?.date ?? "—"
-      : "—";
-    const avg = s.points.length
-      ? (s.total / s.points.length).toFixed(1)
-      : "0.0";
+    const clicks  = s.points.map(p => p.clicks);
+    const peak    = Math.max(...clicks, 0);
+    const peakIdx = clicks.indexOf(peak);
+    const peakDay = peakIdx >= 0 ? (s.points[peakIdx]?.date ?? "—") : "—";
+    const avg     = s.points.length
+      ? (s.total / s.points.length).toFixed(1) : "0.0";
 
     const tr = document.createElement("tr");
     tr.className = "border-b border-gray-50 hover:bg-gray-50 transition";
     tr.innerHTML = `
-      <td class="py-2 flex items-center gap-2">
-        <span class="w-3 h-3 rounded-sm inline-block flex-shrink-0"
-              style="background:${PALETTE[i % PALETTE.length]}"></span>
-        <span class="font-medium">${s.short_code}</span>
+      <td class="py-2">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-sm inline-block flex-shrink-0"
+                style="background:${PALETTE[i % PALETTE.length]}"></span>
+          <span class="font-medium">${s.short_code}</span>
+        </div>
       </td>
       <td class="py-2 text-right font-bold text-indigo-600">
         ${s.total.toLocaleString()}
@@ -257,7 +258,7 @@ function renderSummaryTable(data, days) {
   });
 }
 
-// Enter key triggers compare
+// ── Enter key triggers compare ────────────────────────────────────────────────
 document.getElementById("codes").addEventListener("keydown", e => {
   if (e.key === "Enter") loadCompare();
 });

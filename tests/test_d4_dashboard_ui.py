@@ -48,7 +48,7 @@ def test_index_has_controls_and_targets() -> None:
     html = client.get("/dashboard/").text
 
     for token in (
-        "apiKey",
+        "apiKeyValue",
         "shortCode",
         "timeseriesChart",
         "browserChart",
@@ -75,7 +75,7 @@ def test_index_calls_expected_endpoints() -> None:
 def test_compare_has_controls_and_targets() -> None:
     html = client.get("/dashboard/compare").text
 
-    for token in ("apiKey", "codes", "compareChart", "summaryTable"):
+    for token in ("codes", "compareChart", "summaryTable"):
         assert token in html
 
 
@@ -90,16 +90,16 @@ def test_compare_calls_compare_endpoint() -> None:
 
 
 def test_dashboard_template_files_exist() -> None:
-    base = Path("app/templates/dashboard")
+    templates = Path("app/templates")
 
-    assert (base / "_base.html").exists()
-    assert (base / "index.html").exists()
-    assert (base / "compare.html").exists()
+    assert (templates / "base.html").exists()
+    assert (templates / "dashboard" / "index.html").exists()
+    assert (templates / "dashboard" / "compare.html").exists()
 
 
 def test_base_template_includes_chartjs_and_nav() -> None:
-    content = Path("app/templates/dashboard/_base.html").read_text()
+    content = Path("app/templates/base.html").read_text()
 
-    assert "chart.js" in content.lower()
-    assert "/dashboard/" in content
-    assert "/dashboard/compare" in content
+    assert "chart" in content.lower()
+    assert "navbar-actions" in content
+    assert "/static/js/auth.js" in content

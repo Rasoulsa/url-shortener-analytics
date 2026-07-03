@@ -1,32 +1,59 @@
-{% extends "dashboard/_base.html" %}
+{% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 
+{% block extra_head %}
+<script>
+  // Auth gate — runs immediately, before body renders.
+  (function () {
+    try {
+      const raw = localStorage.getItem("urlshortener_session");
+      const session = raw ? JSON.parse(raw) : null;
+      if (!session || !session.api_key) {
+        window.location.replace("/?auth=required");
+      }
+    } catch (e) {
+      window.location.replace("/?auth=required");
+    }
+  })();
+</script>
+{% endblock %}
+
 {% block content %}
+
+<!-- ── API Key card — always visible for logged-in users ── -->
+<div class="mb-6 rounded-xl border border-gray-200 bg-white shadow-sm p-5">
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+    Your API Key
+  </p>
+  <div class="flex items-center gap-3 flex-wrap">
+    <code id="apiKeyValue"
+          class="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg
+                 px-3 py-2 text-sm font-mono break-all text-gray-800 select-all">
+      Loading…
+    </code>
+    <button id="apiKeyCopy"
+            class="shrink-0 px-4 py-2 rounded-lg bg-indigo-600 text-white
+                   text-sm font-medium hover:bg-indigo-700 transition">
+      Copy
+    </button>
+  </div>
+</div>
 
 <!-- ── Header ── -->
 <div class="mb-6 flex flex-wrap items-end gap-4">
   <div>
     <h1 class="text-2xl font-bold text-gray-900">Analytics Dashboard</h1>
     <p class="text-sm text-gray-500 mt-0.5">
-      Enter your API key and pick a short code to explore analytics.
+      Pick a short code to explore its analytics.
     </p>
   </div>
 </div>
 
-<!-- ── API Key + Code picker ── -->
+<!-- ── Code picker ── -->
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-    <div class="sm:col-span-1">
-      <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
-        API Key
-      </label>
-      <input id="apiKey" type="password" placeholder="your-api-key"
-             class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
-                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-    </div>
-
-    <div class="sm:col-span-1">
+    <div>
       <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
         Short Code
       </label>
@@ -35,7 +62,7 @@
                     focus:outline-none focus:ring-2 focus:ring-indigo-400" />
     </div>
 
-    <div class="sm:col-span-1">
+    <div>
       <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
         Period
       </label>
@@ -62,7 +89,8 @@
 
 <!-- ── Error banner ── -->
 <div id="errorBanner"
-     class="hidden mb-4 rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-3 text-sm">
+     class="hidden mb-4 rounded-lg bg-red-50 border border-red-200
+            text-red-700 px-4 py-3 text-sm">
 </div>
 
 <!-- ── Stat cards ── -->
@@ -102,9 +130,7 @@
 
   <!-- Country table -->
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-    <h2 class="text-base font-semibold text-gray-700 mb-3">
-      Geographic Breakdown
-    </h2>
+    <h2 class="text-base font-semibold text-gray-700 mb-3">Geographic Breakdown</h2>
     <div class="overflow-auto thin-scroll max-h-72">
       <table class="w-full text-sm">
         <thead>
@@ -139,32 +165,60 @@
 
 {% block scripts %}
 <script>
-// ── Wait for dashboard.js to load, then initialize ──────────────────────────
-window.addEventListener("DOMContentLoaded", function() {
-  bindApiKeyInput("apiKey");
-});
-
-// ── Chart instances (kept so we can destroy & recreate) ────────────────────
+// ── Chart instances ──────────────────────────────────────────────────────────
 let tsChart = null;
 let brChart = null;
 
-// ── Colour palette ─────────────────────────────────────────────────────────
+
 const PALETTE = [
   "#6366f1","#8b5cf6","#ec4899","#f59e0b",
   "#10b981","#3b82f6","#ef4444","#14b8a6",
 ];
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-function apiKey()    { return getApiKey() || document.getElementById("apiKey").value.trim(); }
+// ── API Key display ───────────────────────────────────────────────────────────
+(function waitForAuth() {
+  if (
+    typeof getSession       !== "function" ||
+    typeof getApiKey        !== "function" ||
+    typeof copyToClipboard  !== "function"
+  ) {
+    setTimeout(waitForAuth, 30);
+    return;
+  }
+
+  const key     = getApiKey();
+  const valueEl = document.getElementById("apiKeyValue");
+  const copyBtn = document.getElementById("apiKeyCopy");
+
+  console.log("[dashboard] waitForAuth resolved — key:", key ? key.slice(0,8)+"…" : "NONE");
+  console.log("[dashboard] valueEl:", valueEl);
+  console.log("[dashboard] copyBtn:", copyBtn);
+
+  if (!valueEl || !copyBtn) {
+    console.warn("[dashboard] DOM elements missing");
+    return;
+  }
+
+  if (!key) {
+    valueEl.textContent = "No API key found — try logging out and back in.";
+    valueEl.classList.add("text-red-400");
+    return;
+  }
+
+  valueEl.textContent = key;
+  copyBtn.addEventListener("click", function () {
+    copyToClipboard(key, copyBtn);
+  });
+})();
+
+// ── Local helpers ─────────────────────────────────────────────────────────────
 function shortCode() { return document.getElementById("shortCode").value.trim(); }
 function period()    { return document.getElementById("period").value; }
 
-function setStatus(msg, isError = false) {
+function setDashStatus(msg, isError = false) {
   const el = document.getElementById("statusMsg");
   el.textContent = msg;
-  el.className = isError
-    ? "text-sm text-red-500"
-    : "text-sm text-gray-500";
+  el.className = isError ? "text-sm text-red-500" : "text-sm text-gray-500";
 }
 
 function showError(msg) {
@@ -177,44 +231,43 @@ function clearError() {
   document.getElementById("errorBanner").classList.add("hidden");
 }
 
-async function apiFetch(path) {
+async function analyticsGet(path) {
   const r = await fetch(`/api/v1/analytics/${path}`, {
-    headers: { "X-API-Key": apiKey() },
+    headers: { "X-API-Key": getApiKey() },
   });
   const json = await r.json();
   if (!r.ok) {
-    const msg = json.errors?.[0]?.message ?? `HTTP ${r.status}`;
-    throw new Error(msg);
+    throw new Error(json.errors?.[0]?.message ?? `HTTP ${r.status}`);
   }
   return json.data;
 }
 
-// ── Destroy helper ─────────────────────────────────────────────────────────
+
 function destroyChart(ref) {
-  if (ref) { ref.destroy(); }
+  if (ref) ref.destroy();
   return null;
 }
 
-// ── Main loader ────────────────────────────────────────────────────────────
+// ── Main loader ───────────────────────────────────────────────────────────────
 async function loadDashboard() {
   clearError();
   const code = shortCode();
   const days = period();
 
-  if (!apiKey()) { showError("Please enter your API key."); return; }
-  if (!code)     { showError("Please enter a short code."); return; }
+  if (!getApiKey()) { showError("No API key found. Please log in again."); return; }
+  if (!code)        { showError("Please enter a short code."); return; }
 
-  setStatus("Loading…");
+  setDashStatus("Loading…");
 
   const btn = document.getElementById("loadBtn");
   btn.disabled = true;
 
   try {
     const [tsData, cntData, brData, refData] = await Promise.all([
-      apiFetch(`${code}/timeseries?days=${days}`),
-      apiFetch(`${code}/countries`),
-      apiFetch(`${code}/browsers?limit=6`),
-      apiFetch(`${code}/referrers?limit=8`),
+      analyticsGet(`${code}/timeseries?days=${days}`),
+      analyticsGet(`${code}/countries`),
+      analyticsGet(`${code}/browsers?limit=6`),
+      analyticsGet(`${code}/referrers?limit=8`),
     ]);
 
     renderStatCards(tsData, cntData, brData, refData);
@@ -223,47 +276,46 @@ async function loadDashboard() {
     renderBrowserChart(brData);
     renderReferrerList(refData);
 
-    // Show sections
+
     ["statCards","timeseriesCard","bottomRow"].forEach(id =>
       document.getElementById(id).classList.remove("hidden")
     );
 
-    setStatus(`Loaded — ${tsData.total} clicks in last ${days} days`);
+    setDashStatus(`Loaded — ${tsData.total} clicks in last ${days} days`);
 
   } catch (err) {
     showError(err.message);
-    setStatus("Failed", true);
+    setDashStatus("Failed", true);
   } finally {
     btn.disabled = false;
   }
 }
 
-// ── Stat cards ─────────────────────────────────────────────────────────────
+// ── Stat cards ────────────────────────────────────────────────────────────────
 function renderStatCards(ts, cnt, br, ref) {
   document.getElementById("statTotal").textContent     = ts.total.toLocaleString();
   document.getElementById("statCountries").textContent = cnt.items.length;
-  document.getElementById("statBrowser").textContent   = br.items[0]?.label  ?? "—";
+  document.getElementById("statBrowser").textContent   = br.items[0]?.label ?? "—";
   document.getElementById("statReferrer").textContent  = ref.items[0]?.label ?? "—";
 }
 
-// ── Timeseries line chart ──────────────────────────────────────────────────
+// ── Timeseries line chart ─────────────────────────────────────────────────────
 function renderTimeseries(data, days) {
   tsChart = destroyChart(tsChart);
 
   document.getElementById("timeseriesLabel").textContent =
     `${data.short_code} · last ${days} days`;
 
-  const labels = data.points.map(p => p.date);
-  const values = data.points.map(p => p.clicks);
 
   const ctx = document.getElementById("timeseriesChart").getContext("2d");
+
   tsChart = new Chart(ctx, {
     type: "line",
     data: {
-      labels,
+      labels: data.points.map(p => p.date),
       datasets: [{
         label: "Clicks",
-        data: values,
+        data: data.points.map(p => p.clicks),
         borderColor: PALETTE[0],
         backgroundColor: PALETTE[0] + "22",
         borderWidth: 2,
@@ -278,20 +330,14 @@ function renderTimeseries(data, days) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: {
-          grid: { display: false },
-          ticks: { maxTicksLimit: 10, font: { size: 11 } },
-        },
-        y: {
-          beginAtZero: true,
-          ticks: { stepSize: 1, font: { size: 11 } },
-        },
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } } },
       },
     },
   });
 }
 
-// ── Country table ──────────────────────────────────────────────────────────
+// ── Country table ─────────────────────────────────────────────────────────────
 function renderCountryTable(data) {
   const tbody = document.getElementById("countryTable");
   tbody.innerHTML = "";
@@ -304,9 +350,7 @@ function renderCountryTable(data) {
 
   data.items.forEach((item, i) => {
     const pct = data.total > 0
-      ? ((item.count / data.total) * 100).toFixed(1)
-      : "0.0";
-
+      ? ((item.count / data.total) * 100).toFixed(1) : "0.0";
     const row = document.createElement("tr");
     row.className = "border-b border-gray-50 hover:bg-gray-50 transition";
     row.innerHTML = `
@@ -322,7 +366,7 @@ function renderCountryTable(data) {
   });
 }
 
-// ── Browser doughnut chart ─────────────────────────────────────────────────
+// ── Browser doughnut chart ────────────────────────────────────────────────────
 function renderBrowserChart(data) {
   brChart = destroyChart(brChart);
 
@@ -351,7 +395,7 @@ function renderBrowserChart(data) {
   });
 }
 
-// ── Referrer list ──────────────────────────────────────────────────────────
+// ── Referrer list ─────────────────────────────────────────────────────────────
 function renderReferrerList(data) {
   const ul = document.getElementById("referrerList");
   ul.innerHTML = "";
@@ -381,11 +425,9 @@ function renderReferrerList(data) {
   });
 }
 
-// ── Allow Enter key to trigger load ───────────────────────────────────────
-["apiKey","shortCode"].forEach(id => {
-  document.getElementById(id).addEventListener("keydown", e => {
-    if (e.key === "Enter") loadDashboard();
-  });
+// ── Enter key triggers load ───────────────────────────────────────────────────
+document.getElementById("shortCode").addEventListener("keydown", e => {
+  if (e.key === "Enter") loadDashboard();
 });
 </script>
 {% endblock %}
