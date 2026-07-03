@@ -72,9 +72,21 @@ def _should_skip_rate_limit(path: str) -> bool:
         "/redoc",
         "/openapi.json",
         "/favicon.ico",
+        # Server-rendered web pages — never rate-limit HTML page loads
+        "/",
+        "/login",
+        "/register",
+        "/create",
+        "/dashboard",
+        "/compare",
+        "/links",
     }
 
     if path in skipped_paths:
+        return True
+
+    # Static assets (JS, CSS, images) — never rate-limit
+    if path.startswith("/static/"):
         return True
 
     if path.startswith("/docs/"):

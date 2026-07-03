@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}URL Shortener{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="/static/js/auth.js"></script>
+  <script defer src="/static/js/dashboard.js"></script>
+  <style>
+    /* thin scrollbar for tables (used on dashboard pages) */
+    .thin-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+    .thin-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+
+  <nav class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+      <a href="/" class="text-lg font-bold text-indigo-600 shrink-0">🔗 URL Shortener</a>
+      <div id="navbar-actions" class="flex items-center gap-2 sm:gap-3 flex-wrap">
+        <!-- populated by auth.js renderNavbar() -->
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-1 max-w-6xl w-full mx-auto px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="border-t border-gray-100 mt-12 py-6 text-center text-xs text-gray-400">
+    &copy; 2026 - URL Shortener &amp; Analytics · v1.0.0 ·
+    <a href="/docs" target="_blank" class="hover:text-gray-600 transition">API Docs</a>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

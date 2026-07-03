@@ -1,13 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// dashboard.js — shared helpers for all dashboard pages
-// Loaded once via _base.html. All functions are global.
+// dashboard.js — shared helpers for all pages
+// Loaded once via base.html. All functions are global.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const _API_KEY_STORAGE = "usa_api_key";
 
 // ── API key persistence ───────────────────────────────────────────────────────
+// Bridges to the auth.js session first (logged-in users never need to
+// re-type their key), falling back to a manually-entered key for anyone
+// testing analytics endpoints without logging in.
 
 function getApiKey() {
+  if (typeof getSession === "function") {
+    const session = getSession();
+    if (session?.api_key) return session.api_key;
+  }
   return localStorage.getItem(_API_KEY_STORAGE) || "";
 }
 
@@ -27,7 +34,8 @@ function clearApiKey() {
 }
 
 // ── Nav key indicator ─────────────────────────────────────────────────────────
-// Updates the small indicator in the nav that shows whether a key is saved.
+// Populates #navKeyIndicator, which auth.js renders inside the navbar
+// for logged-in users.
 
 function _updateKeyIndicator() {
   const el = document.getElementById("navKeyIndicator");
@@ -42,7 +50,7 @@ function _updateKeyIndicator() {
       </span>`;
   } else {
     el.innerHTML = `
-      <a href="/login"
+      <a href="/dashboard"
          class="text-xs text-amber-600 hover:text-amber-700 font-medium transition">
         ⚠ No API key
       </a>`;
@@ -51,6 +59,20 @@ function _updateKeyIndicator() {
 
 // Run on every page load
 document.addEventListener("DOMContentLoaded", _updateKeyIndicator);
+
+// ── Mask helper ───────────────────────────────────────────────────────────────
+
+/**
+ * Masks all but the first 6 and last 4 characters of a key, for display
+ * before the user explicitly chooses to reveal it.
+ *
+ * @param {string} key
+ * @returns {string}
+ */
+function maskKey(key) {
+  if (!key || key.length < 10) return "••••••••";
+  return key.slice(0, 6) + "•".repeat(Math.max(key.length - 10, 4)) + key.slice(-4);
+}
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 
