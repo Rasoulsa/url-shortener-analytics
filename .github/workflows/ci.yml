@@ -75,6 +75,12 @@ jobs:
         run: uv run mypy app
 
       - name: Run database migrations
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5433"
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: urlshort
         run: uv run alembic upgrade head
 
       - name: Run tests
