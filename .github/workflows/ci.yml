@@ -16,6 +16,32 @@ jobs:
     name: Lint, Format, Type-check & Test
     runs-on: ubuntu-latest
 
+    # ── Docker services for tests ─────────────────────────────────────────
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: urlshort
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6380:6379
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
