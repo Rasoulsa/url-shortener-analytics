@@ -1,42 +1,32 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 
-{% block extra_head %}
-<script>
-  // Auth gate — runs immediately, before body renders.
-  (function () {
-    try {
-      const raw = localStorage.getItem("urlshortener_session");
-      const session = raw ? JSON.parse(raw) : null;
-      if (!session || !session.api_key) {
-        window.location.replace("/?auth=required");
-      }
-    } catch (e) {
-      window.location.replace("/?auth=required");
-    }
-  })();
-</script>
-{% endblock %}
-
 {% block content %}
 
-<!-- ── API Key card — always visible for logged-in users ── -->
+<!-- ── API Key card — server-rendered, always visible for logged-in users ── -->
 <div class="mb-6 rounded-xl border border-gray-200 bg-white shadow-sm p-5">
+  <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Signed in as</p>
+      <p class="font-medium text-gray-900">{{ user_email }}</p>
+    </div>
+  </div>
   <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
     Your API Key
   </p>
   <div class="flex items-center gap-3 flex-wrap">
     <code id="apiKeyValue"
           class="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg
-                 px-3 py-2 text-sm font-mono break-all text-gray-800 select-all">
-      Loading…
-    </code>
+                 px-3 py-2 text-sm font-mono break-all text-gray-800 select-all">{{ api_key }}</code>
     <button id="apiKeyCopy"
             class="shrink-0 px-4 py-2 rounded-lg bg-indigo-600 text-white
                    text-sm font-medium hover:bg-indigo-700 transition">
       Copy
     </button>
   </div>
+  <p class="text-xs text-gray-400 mt-2">
+    Pass this in the <code>X-API-Key</code> header for API requests.
+  </p>
 </div>
 
 <!-- ── Header ── -->
@@ -169,47 +159,27 @@
 let tsChart = null;
 let brChart = null;
 
-
 const PALETTE = [
   "#6366f1","#8b5cf6","#ec4899","#f59e0b",
   "#10b981","#3b82f6","#ef4444","#14b8a6",
 ];
 
-// ── API Key display ───────────────────────────────────────────────────────────
-(function waitForAuth() {
-  if (
-    typeof getSession       !== "function" ||
-    typeof getApiKey        !== "function" ||
-    typeof copyToClipboard  !== "function"
-  ) {
-    setTimeout(waitForAuth, 30);
-    return;
-  }
+// ── API key: read from server-rendered DOM (no more localStorage/getApiKey) ────
+function getApiKey() {
+  return document.getElementById("apiKeyValue")?.textContent.trim() || "";
+}
 
-  const key     = getApiKey();
-  const valueEl = document.getElementById("apiKeyValue");
-  const copyBtn = document.getElementById("apiKeyCopy");
-
-  console.log("[dashboard] waitForAuth resolved — key:", key ? key.slice(0,8)+"…" : "NONE");
-  console.log("[dashboard] valueEl:", valueEl);
-  console.log("[dashboard] copyBtn:", copyBtn);
-
-  if (!valueEl || !copyBtn) {
-    console.warn("[dashboard] DOM elements missing");
-    return;
-  }
-
-  if (!key) {
-    valueEl.textContent = "No API key found — try logging out and back in.";
-    valueEl.classList.add("text-red-400");
-    return;
-  }
-
-  valueEl.textContent = key;
-  copyBtn.addEventListener("click", function () {
-    copyToClipboard(key, copyBtn);
+// ── API key copy button ────────────────────────────────────────────────────────
+document.getElementById("apiKeyCopy")?.addEventListener("click", () => {
+  const key = getApiKey();
+  if (!key) return;
+  navigator.clipboard.writeText(key).then(() => {
+    const btn = document.getElementById("apiKeyCopy");
+    const orig = btn.textContent;
+    btn.textContent = "Copied ✓";
+    setTimeout(() => (btn.textContent = orig), 1500);
   });
-})();
+});
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
 function shortCode() { return document.getElementById("shortCode").value.trim(); }
@@ -232,6 +202,7 @@ function clearError() {
 }
 
 async function analyticsGet(path) {
+  // X-API-Key kept for API-client parity; cookie also authenticates same-origin.
   const r = await fetch(`/api/v1/analytics/${path}`, {
     headers: { "X-API-Key": getApiKey() },
   });
@@ -241,7 +212,6 @@ async function analyticsGet(path) {
   }
   return json.data;
 }
-
 
 function destroyChart(ref) {
   if (ref) ref.destroy();
@@ -276,7 +246,6 @@ async function loadDashboard() {
     renderBrowserChart(brData);
     renderReferrerList(refData);
 
-
     ["statCards","timeseriesCard","bottomRow"].forEach(id =>
       document.getElementById(id).classList.remove("hidden")
     );
@@ -305,7 +274,6 @@ function renderTimeseries(data, days) {
 
   document.getElementById("timeseriesLabel").textContent =
     `${data.short_code} · last ${days} days`;
-
 
   const ctx = document.getElementById("timeseriesChart").getContext("2d");
 

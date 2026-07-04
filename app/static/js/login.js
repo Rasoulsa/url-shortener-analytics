@@ -1,63 +1,77 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const tabPassword = document.getElementById("tab-password");
-  const tabApikey = document.getElementById("tab-apikey");
-  const formPassword = document.getElementById("login-password-form");
-  const formApikey = document.getElementById("login-apikey-form");
-  const errorEl = document.getElementById("login-error");
+// ── Tab switching ─────────────────────────────────────────────────────────
+const tabPassword = document.getElementById("tab-password");
+const tabApikey = document.getElementById("tab-apikey");
+const passwordForm = document.getElementById("login-password-form");
+const apikeyForm = document.getElementById("login-apikey-form");
+const errorEl = document.getElementById("login-error");
 
-  function activateTab(tab) {
-    const isPassword = tab === "password";
-    formPassword.classList.toggle("hidden", !isPassword);
-    formApikey.classList.toggle("hidden", isPassword);
-    tabPassword.classList.toggle("bg-indigo-600", isPassword);
-    tabPassword.classList.toggle("text-white", isPassword);
-    tabPassword.classList.toggle("bg-gray-100", !isPassword);
-    tabPassword.classList.toggle("text-gray-700", !isPassword);
-    tabApikey.classList.toggle("bg-indigo-600", !isPassword);
-    tabApikey.classList.toggle("text-white", !isPassword);
-    tabApikey.classList.toggle("bg-gray-100", isPassword);
-    tabApikey.classList.toggle("text-gray-700", isPassword);
-  }
+function activate(tab) {
+  const isPw = tab === "password";
 
-  tabPassword.addEventListener("click", () => activateTab("password"));
-  tabApikey.addEventListener("click", () => activateTab("apikey"));
+  passwordForm.classList.toggle("hidden", !isPw);
+  apikeyForm.classList.toggle("hidden", isPw);
 
-  function showError(msg) {
-    errorEl.textContent = msg;
-    errorEl.classList.remove("hidden");
-  }
+  tabPassword.className = isPw
+    ? "tab-btn flex-1 py-2 rounded-lg bg-indigo-600 text-white font-medium"
+    : "tab-btn flex-1 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium";
+  tabApikey.className = isPw
+    ? "tab-btn flex-1 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium"
+    : "tab-btn flex-1 py-2 rounded-lg bg-indigo-600 text-white font-medium";
 
-  async function submitLogin(body) {
-    errorEl.classList.add("hidden");
-    try {
-      const res = await fetch("/api/v1/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        showError(json.errors?.[0]?.message || "Login failed.");
-        return;
-      }
-      setSession({ email: json.data.email, api_key: json.data.api_key });
-      sessionStorage.setItem("usa_show_api_key", "1");
-      window.location.href = "/dashboard";
-    } catch {
-      showError("Network error — is the API running?");
-    }
-  }
+  hideError();
+}
 
-  formPassword.addEventListener("submit", (e) => {
-    e.preventDefault();
-    submitLogin({
-      email: document.getElementById("login-email").value,
-      password: document.getElementById("login-password").value,
+tabPassword.addEventListener("click", () => activate("password"));
+tabApikey.addEventListener("click", () => activate("apikey"));
+
+// ── Error helpers ─────────────────────────────────────────────────────────
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.classList.remove("hidden");
+}
+function hideError() {
+  errorEl.textContent = "";
+  errorEl.classList.add("hidden");
+}
+
+function extractError(body, fallback) {
+  return body?.errors?.[0]?.message || fallback;
+}
+
+// ── Submit handler (shared) ───────────────────────────────────────────────
+async function submitLogin(payload) {
+  hideError();
+  try {
+    const res = await fetch("/session/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-  });
+    const body = await res.json().catch(() => null);
 
-  formApikey.addEventListener("submit", (e) => {
-    e.preventDefault();
-    submitLogin({ api_key: document.getElementById("login-apikey").value });
+    if (!res.ok) {
+      showError(extractError(body, "Login failed. Check your credentials."));
+      return;
+    }
+    window.location.href = body.redirect || "/dashboard/";
+  } catch {
+    showError("Network error. Please try again.");
+  }
+}
+
+// ── Password form ─────────────────────────────────────────────────────────
+passwordForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitLogin({
+    email: document.getElementById("login-email").value.trim(),
+    password: document.getElementById("login-password").value,
+  });
+});
+
+// ── API key form ──────────────────────────────────────────────────────────
+apikeyForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitLogin({
+    api_key: document.getElementById("login-apikey").value.trim(),
   });
 });

@@ -1,13 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.schemas.common import Envelope
 from app.schemas.user import UserCreate, UserLogin, UserOut
+from app.services import auth_service
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -98,24 +97,7 @@ async def register(
     payload: UserCreate,
     db: AsyncSession = Depends(get_db),
 ) -> Envelope[UserOut]:
-    existing = (
-        await db.execute(select(User).where(User.email == payload.email))
-    ).scalar_one_or_none()
-
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Email '{payload.email}' is already registered.",
-        )
-
-    user = User(
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-
+    user = await auth_service.register_user(db, payload)
     return Envelope(data=UserOut.model_validate(user))
 
 
@@ -186,31 +168,7 @@ async def login(
     payload: UserLogin,
     db: AsyncSession = Depends(get_db),
 ) -> Envelope[UserOut]:
-    user: User | None = None
-
-    if payload.api_key:
-        user = (
-            await db.execute(select(User).where(User.api_key == payload.api_key))
-        ).scalar_one_or_none()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired API key.",
-            )
-    else:
-        user = (
-            await db.execute(select(User).where(User.email == payload.email))
-        ).scalar_one_or_none()
-        if (
-            not user
-            or payload.password is None
-            or not verify_password(payload.password, user.hashed_password)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password.",
-            )
-
+    user = await auth_service.authenticate_user(db, payload)
     return Envelope(data=UserOut.model_validate(user))
 
 
