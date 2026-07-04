@@ -21,7 +21,7 @@ async def dashboard_root() -> RedirectResponse:
 async def dashboard_index(
     request: Request,
     user: User | None = Depends(get_optional_user),
-) -> Response:  # ← changed from HTMLResponse
+) -> Response:
     if user is None:
         return RedirectResponse(url="/?auth=required", status_code=303)
 
@@ -36,12 +36,45 @@ async def dashboard_index(
 async def dashboard_compare(
     request: Request,
     user: User | None = Depends(get_optional_user),
-) -> Response:  # ← changed from HTMLResponse
+) -> Response:
     if user is None:
         return RedirectResponse(url="/?auth=required", status_code=303)
 
     return templates.TemplateResponse(
         request,
         "dashboard/compare.html",
+        {"user_email": user.email, "api_key": user.api_key},
+    )
+
+
+# ── F3: Link management ───────────────────────────────────────────────────────
+
+
+@router.get("/create", response_class=HTMLResponse, include_in_schema=False)
+async def create_page(
+    request: Request,
+    user: User | None = Depends(get_optional_user),
+) -> Response:
+    if user is None:
+        return RedirectResponse(url="/?auth=required", status_code=303)
+
+    return templates.TemplateResponse(
+        request,
+        "create.html",
+        {"user_email": user.email, "api_key": user.api_key},
+    )
+
+
+@router.get("/links", response_class=HTMLResponse, include_in_schema=False)
+async def links_page(
+    request: Request,
+    user: User | None = Depends(get_optional_user),
+) -> Response:
+    if user is None:
+        return RedirectResponse(url="/?auth=required", status_code=303)
+
+    return templates.TemplateResponse(
+        request,
+        "links.html",
         {"user_email": user.email, "api_key": user.api_key},
     )

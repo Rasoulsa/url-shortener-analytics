@@ -30,8 +30,8 @@ function renderNavbar() {
       <a href="/" class="nav-btn">Home</a>
       <a href="/create" class="nav-btn">Create</a>
       <a href="/links" class="nav-btn">My Links</a>
-      <a href="/dashboard" class="nav-btn">Dashboard</a>
-      <a href="/compare" class="nav-btn">Compare</a>
+      <a href="/dashboard/" class="nav-btn">Dashboard</a>
+      <a href="/dashboard/compare" class="nav-btn">Compare</a>
       <div id="navKeyIndicator" class="ml-1">
         ${_cachedUser.api_key ? "" : '<span class="text-amber-600 text-sm">⚠ No API key</span>'}
       </div>

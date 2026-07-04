@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}My Links{% endblock %}
+
+{% block content %}
+
+<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">My Links</h1>
+    <p class="text-sm text-gray-500 mt-0.5">All the short links you've created.</p>
+  </div>
+  <a href="/create"
+     class="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold
+            hover:bg-indigo-700 transition">
+    + New Link
+  </a>
+</div>
+
+<!-- Error banner -->
+<div id="errorBanner"
+     class="hidden mb-4 rounded-lg bg-red-50 border border-red-200
+            text-red-700 px-4 py-3 text-sm"></div>
+
+<!-- Links table -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="overflow-auto thin-scroll">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-gray-400 uppercase border-b border-gray-100 bg-gray-50">
+          <th class="text-left px-4 py-3">Short Code</th>
+          <th class="text-left px-4 py-3">Destination</th>
+          <th class="text-right px-4 py-3">Clicks</th>
+          <th class="text-left px-4 py-3">Status</th>
+          <th class="text-right px-4 py-3">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="linksTable"></tbody>
+    </table>
+  </div>
+
+  <!-- Empty state -->
+  <div id="emptyState" class="hidden text-center py-12">
+    <p class="text-gray-400 text-sm">No links yet.</p>
+    <a href="/create" class="text-indigo-600 text-sm hover:underline mt-1 inline-block">
+      Create your first link →
+    </a>
+  </div>
+
+  <!-- Loading state -->
+  <div id="loadingState" class="text-center py-12">
+    <p class="text-gray-400 text-sm">Loading…</p>
+  </div>
+</div>
+
+<!-- Load more -->
+<div class="mt-4 text-center">
+  <button id="loadMoreBtn"
+          class="hidden px-5 py-2 rounded-lg border border-gray-300 text-gray-600
+                 text-sm font-medium hover:bg-gray-50 transition">
+    Load more
+  </button>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function getApiKey() { return "{{ api_key }}"; }
+
+const tbody        = document.getElementById("linksTable");
+const emptyState   = document.getElementById("emptyState");
+const loadingState = document.getElementById("loadingState");
+const loadMoreBtn  = document.getElementById("loadMoreBtn");
+const errorBanner  = document.getElementById("errorBanner");
+
+let nextCursor = null;
+let loadedAny  = false;
+
+function showError(msg) {
+  errorBanner.textContent = msg;
+  errorBanner.classList.remove("hidden");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]
+  ));
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" });
+}
+
+function statusBadge(link) {
+  const now = new Date();
+  if (link.expires_at && new Date(link.expires_at) < now) {
+    return `<span class="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600">Expired</span>`;
+  }
+  const badges = [];
+  if (link.has_password)
+    badges.push(`<span class="px-2 py-0.5 rounded-full text-xs bg-amber-50 text-amber-600">🔒 Protected</span>`);
+  if (link.is_permanent)
+    badges.push(`<span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-600">Permanent</span>`);
+  if (link.expires_at)
+    badges.push(`<span class="px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500" title="Expires ${fmtDate(link.expires_at)}">Expires ${fmtDate(link.expires_at)}</span>`);
+  if (!badges.length)
+    badges.push(`<span class="px-2 py-0.5 rounded-full text-xs bg-green-50 text-green-600">Active</span>`);
+  return badges.join(" ");
+}
+
+function renderRow(link) {
+  const tr = document.createElement("tr");
+  tr.className = "border-b border-gray-50 hover:bg-gray-50 transition";
+  tr.dataset.code = link.short_code;
+  tr.innerHTML = `
+    <td class="px-4 py-3">
+      <a href="${escapeHtml(link.short_url)}" target="_blank"
+         class="font-mono text-indigo-600 hover:underline">${escapeHtml(link.short_code)}</a>
+    </td>
+    <td class="px-4 py-3 max-w-[260px]">
+      <span class="block truncate text-gray-600" title="${escapeHtml(link.long_url)}">
+        ${escapeHtml(link.long_url)}
+      </span>
+    </td>
+    <td class="px-4 py-3 text-right font-medium">${link.click_count.toLocaleString()}</td>
+    <td class="px-4 py-3">${statusBadge(link)}</td>
+    <td class="px-4 py-3 text-right whitespace-nowrap">
+      <button class="copy-btn text-xs text-gray-500 hover:text-indigo-600 transition"
+              data-url="${escapeHtml(link.short_url)}">Copy</button>
+      <a href="/dashboard/?code=${encodeURIComponent(link.short_code)}"
+         class="ml-3 text-xs text-gray-500 hover:text-indigo-600 transition">Analytics</a>
+      <button class="delete-btn ml-3 text-xs text-red-500 hover:text-red-700 transition"
+              data-code="${escapeHtml(link.short_code)}">Delete</button>
+    </td>
+  `;
+  return tr;
+}
+
+async function loadLinks() {
+  errorBanner.classList.add("hidden");
+  loadMoreBtn.disabled = true;
+
+  const url = nextCursor
+    ? `/api/v1/links?limit=20&cursor=${nextCursor}`
+    : `/api/v1/links?limit=20`;
+
+  try {
+    const r = await fetch(url, { headers: { "X-API-Key": getApiKey() } });
+    const json = await r.json();
+    if (!r.ok) throw new Error(json.errors?.[0]?.message ?? `HTTP ${r.status}`);
+
+    const links = json.data || [];
+    nextCursor = json.meta?.next_cursor ?? null;
+
+    links.forEach(link => tbody.appendChild(renderRow(link)));
+    if (links.length) loadedAny = true;
+
+    loadingState.classList.add("hidden");
+
+    if (!loadedAny) {
+      emptyState.classList.remove("hidden");
+    }
+
+    loadMoreBtn.classList.toggle("hidden", !nextCursor);
+
+  } catch (err) {
+    loadingState.classList.add("hidden");
+    showError(err.message);
+  } finally {
+    loadMoreBtn.disabled = false;
+  }
+}
+
+// Event delegation for copy + delete
+tbody.addEventListener("click", async (e) => {
+  const copyBtn = e.target.closest(".copy-btn");
+  if (copyBtn) {
+    navigator.clipboard.writeText(copyBtn.dataset.url).then(() => {
+      const orig = copyBtn.textContent;
+      copyBtn.textContent = "Copied ✓";
+      setTimeout(() => (copyBtn.textContent = orig), 1200);
+    });
+    return;
+  }
+
+  const delBtn = e.target.closest(".delete-btn");
+  if (delBtn) {
+    const code = delBtn.dataset.code;
+    if (!confirm(`Delete "${code}"? This also deletes its analytics and cannot be undone.`)) return;
+
+    delBtn.disabled = true;
+    delBtn.textContent = "Deleting…";
+    try {
+      const r = await fetch(`/api/v1/links/${encodeURIComponent(code)}`, {
+        method: "DELETE",
+        headers: { "X-API-Key": getApiKey() },
+      });
+      if (r.status !== 204 && !r.ok) {
+        const json = await r.json().catch(() => ({}));
+        throw new Error(json.errors?.[0]?.message ?? `HTTP ${r.status}`);
+      }
+      const row = tbody.querySelector(`tr[data-code="${CSS.escape(code)}"]`);
+      row?.remove();
+
+      if (!tbody.children.length && !nextCursor) {
+        emptyState.classList.remove("hidden");
+      }
+    } catch (err) {
+      showError(err.message);
+      delBtn.disabled = false;
+      delBtn.textContent = "Delete";
+    }
+  }
+});
+
+loadMoreBtn.addEventListener("click", loadLinks);
+
+loadLinks();
+</script>
+{% endblock %}
