@@ -19,8 +19,3 @@ async def login_page(request: Request):
 @router.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request):
     return templates.TemplateResponse(request, "auth/register.html")
-
-
-@router.get("/create", response_class=HTMLResponse)
-async def create_placeholder(request: Request):
-    return templates.TemplateResponse(request, "create_placeholder.html")

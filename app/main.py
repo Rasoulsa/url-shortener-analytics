@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -22,7 +23,7 @@ from app.web import session as web_session
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    await redis_client.close()
+    await cast(Any, redis_client).aclose()
 
 
 app = FastAPI(
