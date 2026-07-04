@@ -1,16 +1,18 @@
+// Banner: shown when a guarded page bounced the user here.
 const params = new URLSearchParams(window.location.search);
 if (params.get("auth") === "required") {
-    const banner = document.createElement("div");
-    banner.className =
-      "max-w-xl mx-auto mb-6 rounded-lg bg-amber-50 border border-amber-200 " +
-      "text-amber-800 px-4 py-3 text-sm text-center";
-    banner.textContent = "Please log in first to access your dashboard.";
-    document.querySelector("main").prepend(banner);
-    // clean the URL so refresh doesn't re-show it
-    history.replaceState({}, "", "/");
+  const banner = document.createElement("div");
+  banner.className =
+    "max-w-xl mx-auto mb-6 rounded-lg bg-amber-50 border border-amber-200 " +
+    "text-amber-800 px-4 py-3 text-sm text-center";
+  banner.textContent = "Please log in first to access your dashboard.";
+  document.querySelector("main").prepend(banner);
+  // clean the URL so refresh doesn't re-show it
+  history.replaceState({}, "", "/");
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+// CTA: depends on real auth state — wait for auth.js to resolve /me.
+document.addEventListener("authReady", () => {
   const cta = document.getElementById("home-cta");
   if (!cta) return;
 

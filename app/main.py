@@ -16,6 +16,7 @@ from app.core.openapi import build_openapi_schema
 from app.core.redis_client import redis_client
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.web import public
+from app.web import session as web_session
 
 
 @asynccontextmanager
@@ -137,6 +138,7 @@ app.include_router(analytics.router)
 app.include_router(analytics_dashboard.router)
 app.include_router(dashboard_ui.router)
 app.include_router(public.router)
+app.include_router(web_session.router)
 
 
 @app.get(

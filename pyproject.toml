@@ -88,6 +88,17 @@ exclude = ["alembic/", ".venv/"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+env = [
+    "POSTGRES_HOST=localhost",
+    "POSTGRES_PORT=5433",
+    "POSTGRES_USER=postgres",
+    "POSTGRES_PASSWORD=postgres",
+    "POSTGRES_DB=urlshort",
+    "REDIS_URL=redis://localhost:6380/0",
+    "CELERY_BROKER_URL=redis://localhost:6380/1",
+    "CELERY_RESULT_BACKEND=redis://localhost:6380/2",
+    "CELERY_TASK_ALWAYS_EAGER=true",
+]
 
 [dependency-groups]
 dev = [
@@ -97,5 +108,6 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "pytest-env>=1.6.0",
     "ruff>=0.15.20",
 ]

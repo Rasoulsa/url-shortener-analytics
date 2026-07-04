@@ -4,38 +4,49 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.main import app
-
-client = TestClient(app)
-
-
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 
-def test_dashboard_redirects_to_slash() -> None:
+def test_dashboard_redirects_to_slash(client: TestClient) -> None:
     response = client.get("/dashboard", follow_redirects=False)
 
     assert response.status_code in {301, 302, 307, 308}
     assert response.headers["location"] == "/dashboard/"
 
 
-def test_dashboard_index_loads() -> None:
-    response = client.get("/dashboard/")
+def test_dashboard_redirects_when_unauthenticated(client: TestClient) -> None:
+    client.cookies.clear()
+    response = client.get("/dashboard/", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?auth=required"
+
+
+def test_compare_redirects_when_unauthenticated(client: TestClient) -> None:
+    client.cookies.clear()
+    response = client.get("/dashboard/compare", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?auth=required"
+
+
+def test_dashboard_index_loads(auth_client: TestClient) -> None:
+    response = auth_client.get("/dashboard/")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Analytics Dashboard" in response.text
 
 
-def test_dashboard_compare_loads() -> None:
-    response = client.get("/dashboard/compare")
+def test_dashboard_compare_loads(auth_client: TestClient) -> None:
+    response = auth_client.get("/dashboard/compare")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Multi-Link Comparison" in response.text
 
 
-def test_static_css_served() -> None:
+def test_static_css_served(client: TestClient) -> None:
     response = client.get("/static/dashboard.css")
 
     assert response.status_code == 200
@@ -44,8 +55,8 @@ def test_static_css_served() -> None:
 # ── Index content ───────────────────────────────────────────────────────────
 
 
-def test_index_has_controls_and_targets() -> None:
-    html = client.get("/dashboard/").text
+def test_index_has_controls_and_targets(auth_client: TestClient) -> None:
+    html = auth_client.get("/dashboard/").text
 
     for token in (
         "apiKeyValue",
@@ -58,8 +69,8 @@ def test_index_has_controls_and_targets() -> None:
         assert token in html
 
 
-def test_index_calls_expected_endpoints() -> None:
-    html = client.get("/dashboard/").text
+def test_index_calls_expected_endpoints(auth_client: TestClient) -> None:
+    html = auth_client.get("/dashboard/").text
 
     assert "/api/v1/analytics/" in html
     assert "timeseries" in html
@@ -69,18 +80,26 @@ def test_index_calls_expected_endpoints() -> None:
     assert "X-API-Key" in html
 
 
+def test_index_shows_api_key(auth_client: TestClient) -> None:
+    me = auth_client.get("/api/v1/auth/me").json()["data"]
+    html = auth_client.get("/dashboard/").text
+
+    assert me["api_key"] in html
+    assert me["email"] in html
+
+
 # ── Compare content ─────────────────────────────────────────────────────────
 
 
-def test_compare_has_controls_and_targets() -> None:
-    html = client.get("/dashboard/compare").text
+def test_compare_has_controls_and_targets(auth_client: TestClient) -> None:
+    html = auth_client.get("/dashboard/compare").text
 
     for token in ("codes", "compareChart", "summaryTable"):
         assert token in html
 
 
-def test_compare_calls_compare_endpoint() -> None:
-    html = client.get("/dashboard/compare").text
+def test_compare_calls_compare_endpoint(auth_client: TestClient) -> None:
+    html = auth_client.get("/dashboard/compare").text
 
     assert "/api/v1/analytics/compare" in html
     assert "X-API-Key" in html

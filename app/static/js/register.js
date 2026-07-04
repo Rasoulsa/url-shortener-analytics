@@ -1,34 +1,41 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const form = document.getElementById("register-form");
-  const errorEl = document.getElementById("register-error");
+const form = document.getElementById("register-form");
+const errorEl = document.getElementById("register-error");
 
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    errorEl.classList.add("hidden");
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.classList.remove("hidden");
+}
+function hideError() {
+  errorEl.textContent = "";
+  errorEl.classList.add("hidden");
+}
+function extractError(body, fallback) {
+  return body?.errors?.[0]?.message || fallback;
+}
 
-    const email = document.getElementById("register-email").value;
-    const password = document.getElementById("register-password").value;
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  hideError();
 
-    try {
-      const res = await fetch("/api/v1/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const json = await res.json();
+  const payload = {
+    email: document.getElementById("register-email").value.trim(),
+    password: document.getElementById("register-password").value,
+  };
 
-      if (!res.ok) {
-        errorEl.textContent = json.errors?.[0]?.message || "Registration failed.";
-        errorEl.classList.remove("hidden");
-        return;
-      }
+  try {
+    const res = await fetch("/session/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => null);
 
-      setSession({ email: json.data.email, api_key: json.data.api_key });
-      sessionStorage.setItem("usa_show_api_key", "1");
-      window.location.href = "/dashboard";
-    } catch {
-      errorEl.textContent = "Network error — is the API running?";
-      errorEl.classList.remove("hidden");
+    if (!res.ok) {
+      showError(extractError(body, "Registration failed. Try again."));
+      return;
     }
-  });
+    window.location.href = body.redirect || "/dashboard/";
+  } catch {
+    showError("Network error. Please try again.");
+  }
 });

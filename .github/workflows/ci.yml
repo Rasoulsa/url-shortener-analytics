@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel stale in-flight runs when a new push arrives on the same branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,6 +14,31 @@ jobs:
   lint-and-test:
     name: Lint, Format, Type-check & Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: urlshort
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6380:6379
 
     steps:
       - name: Checkout code
@@ -41,8 +65,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      # Fastest checks first — fail early, save runner minutes.
-
       - name: Format check with Ruff
         run: uv run ruff format --check .
 
@@ -51,6 +73,15 @@ jobs:
 
       - name: Type-check with mypy
         run: uv run mypy app
+
+      - name: Run database migrations
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5433"
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: urlshort
+        run: uv run alembic upgrade head
 
       - name: Run tests
         run: uv run pytest -v --tb=short

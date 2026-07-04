@@ -1,24 +1,33 @@
 {% extends "base.html" %}
 {% block title %}Compare Links{% endblock %}
 
-{% block extra_head %}
-<script>
-  // Auth gate — runs immediately, before body renders.
-  (function () {
-    try {
-      const raw = localStorage.getItem("urlshortener_session");
-      const session = raw ? JSON.parse(raw) : null;
-      if (!session || !session.api_key) {
-        window.location.replace("/?auth=required");
-      }
-    } catch (e) {
-      window.location.replace("/?auth=required");
-    }
-  })();
-</script>
-{% endblock %}
-
 {% block content %}
+
+<!-- ── API Key card — server-rendered, always visible for logged-in users ── -->
+<div class="mb-6 rounded-xl border border-gray-200 bg-white shadow-sm p-5">
+  <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Signed in as</p>
+      <p class="font-medium text-gray-900">{{ user_email }}</p>
+    </div>
+  </div>
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+    Your API Key
+  </p>
+  <div class="flex items-center gap-3 flex-wrap">
+    <code id="apiKeyValue"
+          class="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg
+                 px-3 py-2 text-sm font-mono break-all text-gray-800 select-all">{{ api_key }}</code>
+    <button id="apiKeyCopy"
+            class="shrink-0 px-4 py-2 rounded-lg bg-indigo-600 text-white
+                   text-sm font-medium hover:bg-indigo-700 transition">
+      Copy
+    </button>
+  </div>
+  <p class="text-xs text-gray-400 mt-2">
+    Pass this in the <code>X-API-Key</code> header for API requests.
+  </p>
+</div>
 
 <div class="mb-6">
   <h1 class="text-2xl font-bold text-gray-900">Multi-Link Comparison</h1>
@@ -105,7 +114,24 @@
 
 {% block scripts %}
 <script>
-// ── Init: focus codes input, pre-fill key indicator ──────────────────────────
+// ── API key: read from server-rendered DOM (no more localStorage/getApiKey) ────
+function getApiKey() {
+  return document.getElementById("apiKeyValue")?.textContent.trim() || "";
+}
+
+// ── API key copy button ────────────────────────────────────────────────────────
+document.getElementById("apiKeyCopy")?.addEventListener("click", () => {
+  const key = getApiKey();
+  if (!key) return;
+  navigator.clipboard.writeText(key).then(() => {
+    const btn = document.getElementById("apiKeyCopy");
+    const orig = btn.textContent;
+    btn.textContent = "Copied ✓";
+    setTimeout(() => (btn.textContent = orig), 1500);
+  });
+});
+
+// ── Init: focus codes input ──────────────────────────────────────────────────
 window.addEventListener("load", function () {
   const codes = document.getElementById("codes");
   if (codes) codes.focus();
