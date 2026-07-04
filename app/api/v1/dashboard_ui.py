@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -21,7 +21,7 @@ async def dashboard_root() -> RedirectResponse:
 async def dashboard_index(
     request: Request,
     user: User | None = Depends(get_optional_user),
-) -> HTMLResponse:
+) -> Response:  # ← changed from HTMLResponse
     if user is None:
         return RedirectResponse(url="/?auth=required", status_code=303)
 
@@ -36,7 +36,7 @@ async def dashboard_index(
 async def dashboard_compare(
     request: Request,
     user: User | None = Depends(get_optional_user),
-) -> HTMLResponse:
+) -> Response:  # ← changed from HTMLResponse
     if user is None:
         return RedirectResponse(url="/?auth=required", status_code=303)
 
