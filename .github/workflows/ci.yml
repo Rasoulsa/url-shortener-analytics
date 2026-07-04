@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel stale in-flight runs when a new push arrives on the same branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,7 +15,6 @@ jobs:
     name: Lint, Format, Type-check & Test
     runs-on: ubuntu-latest
 
-    # ── Docker services for tests ─────────────────────────────────────────
     services:
       postgres:
         image: postgres:15
@@ -67,8 +65,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      # Fastest checks first — fail early, save runner minutes.
-
       - name: Format check with Ruff
         run: uv run ruff format --check .
 
@@ -77,6 +73,9 @@ jobs:
 
       - name: Type-check with mypy
         run: uv run mypy app
+
+      - name: Run database migrations
+        run: uv run alembic upgrade head
 
       - name: Run tests
         run: uv run pytest -v --tb=short
