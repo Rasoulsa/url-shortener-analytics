@@ -75,7 +75,8 @@ def test_dashboard_loads_with_cookie(client: TestClient) -> None:
     res = client.get("/dashboard/")
     assert res.status_code == 200
     assert email in res.text
-    assert "apiKeyValue" in res.text
+    assert "apiKeyDisplay" in res.text
+    assert "apiKeyInput" in res.text
 
 
 def test_compare_redirects_when_no_cookie() -> None:

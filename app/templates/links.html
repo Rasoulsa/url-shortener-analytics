@@ -128,8 +128,8 @@ function renderRow(link) {
     <td class="px-4 py-3 text-right whitespace-nowrap">
       <button class="copy-btn text-xs text-gray-500 hover:text-indigo-600 transition"
               data-url="${escapeHtml(link.short_url)}">Copy</button>
-      <a href="/dashboard/?code=${encodeURIComponent(link.short_code)}"
-         class="ml-3 text-xs text-gray-500 hover:text-indigo-600 transition">Analytics</a>
+      <a href="/dashboard/analytics/${encodeURIComponent(link.short_code)}"
+          class="ml-3 text-xs text-gray-500 hover:text-indigo-600 transition">📊 Analytics</a>
       <button class="delete-btn ml-3 text-xs text-red-500 hover:text-red-700 transition"
               data-code="${escapeHtml(link.short_code)}">Delete</button>
     </td>

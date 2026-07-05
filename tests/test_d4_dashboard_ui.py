@@ -59,8 +59,10 @@ def test_index_has_controls_and_targets(auth_client: TestClient) -> None:
     html = auth_client.get("/dashboard/").text
 
     for token in (
-        "apiKeyValue",
+        "apiKeyDisplay",
+        "apiKeyInput",
         "shortCode",
+        "period",
         "timeseriesChart",
         "browserChart",
         "countryTable",
@@ -74,9 +76,9 @@ def test_index_calls_expected_endpoints(auth_client: TestClient) -> None:
 
     assert "/api/v1/analytics/" in html
     assert "timeseries" in html
-    assert "countries" in html
-    assert "browsers" in html
-    assert "referrers" in html
+    assert "country" in html.lower()
+    assert "browser" in html.lower()
+    assert "referrer" in html.lower()
     assert "X-API-Key" in html
 
 

@@ -9,7 +9,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.v1 import analytics, analytics_dashboard, auth, dashboard_ui, links, redirect
+from app.api.v1 import (
+    analytics,
+    analytics_dashboard,
+    analytics_ui,
+    auth,
+    dashboard_ui,
+    links,
+    redirect,
+)
 from app.core.config import settings
 from app.core.envelope import error_body, errors_body
 from app.core.exceptions import AppError
@@ -138,6 +146,7 @@ app.include_router(links.router)
 app.include_router(analytics.router)
 app.include_router(analytics_dashboard.router)
 app.include_router(dashboard_ui.router)
+app.include_router(analytics_ui.router)
 app.include_router(public.router)
 app.include_router(web_session.router)
 

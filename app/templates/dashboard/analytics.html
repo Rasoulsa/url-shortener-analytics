@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Analytics — {{ short_code }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-8">
+
+  <!-- API Key card (editable) -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-6">
+    <p class="text-sm font-medium text-gray-500 mb-2">Your API Key</p>
+    <div class="flex items-center gap-3 flex-wrap">
+      <input id="apiKeyValue" value="{{ api_key }}" spellcheck="false"
+             class="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg
+                    px-3 py-2 text-sm font-mono break-all text-gray-800" />
+      <button id="apiKeyCopy"
+              class="shrink-0 px-4 py-2 rounded-lg bg-indigo-600 text-white
+                     text-sm font-medium hover:bg-indigo-700 transition">Copy</button>
+    </div>
+  </div>
+
+  <!-- Controls: Short Code + Period -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-6">
+    <div class="flex flex-wrap items-end gap-4">
+      <div class="flex-1 min-w-[200px]">
+        <label class="block text-sm font-medium text-gray-500 mb-1">Short Code</label>
+        <input id="shortCode" value="{{ short_code }}"
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-500 mb-1">Period</label>
+        <select id="period"
+                class="border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <button id="loadBtn"
+              class="px-5 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium
+                     hover:bg-indigo-700 transition">Load Analytics</button>
+    </div>
+    <p id="errorBox" class="hidden mt-3 text-sm text-red-600"></p>
+  </div>
+
+  <!-- Timeseries chart -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-6">
+    <h2 class="text-lg font-semibold text-gray-800 mb-4">Visits Over Time</h2>
+    <canvas id="visitsChart" height="100"></canvas>
+  </div>
+
+  <!-- Breakdown tables -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <h3 class="text-md font-semibold text-gray-800 mb-3">Top Countries</h3>
+      <table class="w-full text-sm"><tbody id="countriesBody"></tbody></table>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <h3 class="text-md font-semibold text-gray-800 mb-3">Top Browsers</h3>
+      <table class="w-full text-sm"><tbody id="browsersBody"></tbody></table>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <h3 class="text-md font-semibold text-gray-800 mb-3">Top Referrers</h3>
+      <table class="w-full text-sm"><tbody id="referrersBody"></tbody></table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function getApiKey() {
+  return document.getElementById("apiKeyValue")?.value.trim() || "";
+}
+function getShortCode() {
+  return document.getElementById("shortCode")?.value.trim() || "";
+}
+function getPeriod() {
+  return document.getElementById("period")?.value || "30";
+}
+function showError(msg) {
+  const box = document.getElementById("errorBox");
+  box.textContent = msg;
+  box.classList.remove("hidden");
+}
+function clearError() {
+  document.getElementById("errorBox").classList.add("hidden");
+}
+
+document.getElementById("apiKeyCopy")?.addEventListener("click", () => {
+  const key = getApiKey();
+  if (!key) return;
+  navigator.clipboard.writeText(key).then(() => {
+    const btn = document.getElementById("apiKeyCopy");
+    const orig = btn.textContent;
+    btn.textContent = "Copied ✓";
+    setTimeout(() => (btn.textContent = orig), 1500);
+  });
+});
+
+let visitsChart = null;
+
+async function fetchJson(url) {
+  const key = getApiKey();
+  const res = await fetch(url, { headers: { "X-API-Key": key } });
+  const json = await res.json();
+  if (!res.ok || (json.errors && json.errors.length)) {
+    const msg = json.errors?.[0]?.message || `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return json.data;
+}
+
+function renderBreakdown(bodyId, rows) {
+  const body = document.getElementById(bodyId);
+  if (!rows || !rows.length) {
+    body.innerHTML = `<tr><td class="py-2 text-gray-400">No data</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr class="border-b border-gray-50">
+      <td class="py-2 text-gray-700">${r.label}</td>
+      <td class="py-2 text-right font-medium">${r.clicks}</td>
+      <td class="py-2 text-right text-gray-400">${r.percentage}%</td>
+    </tr>`).join("");
+}
+
+async function loadAll() {
+  clearError();
+  const code = getShortCode();
+  const days = getPeriod();
+  if (!getApiKey()) { showError("No API key found. Please log in again."); return; }
+  if (!code)        { showError("Enter a short code."); return; }
+
+  const base = `/api/v1/analytics/links/${encodeURIComponent(code)}`;
+
+  try {
+    // Timeseries
+    const ts = await fetchJson(`${base}/timeseries?days=${days}`);
+    const labels = ts.map(p => p.date);
+    const data   = ts.map(p => p.clicks);
+
+    if (visitsChart) visitsChart.destroy();
+    visitsChart = new Chart(document.getElementById("visitsChart"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{
+          label: "Clicks",
+          data,
+          borderColor: "rgb(79,70,229)",
+          backgroundColor: "rgba(79,70,229,0.1)",
+          fill: true,
+          tension: 0.3,
+        }],
+      },
+      options: { responsive: true, plugins: { legend: { display: false } } },
+    });
+
+    // Breakdowns (parallel)
+    const [countries, browsers, referrers] = await Promise.all([
+      fetchJson(`${base}/breakdown?dimension=country&days=${days}`),
+      fetchJson(`${base}/breakdown?dimension=browser&days=${days}`),
+      fetchJson(`${base}/breakdown?dimension=referrer&days=${days}`),
+    ]);
+    renderBreakdown("countriesBody", countries);
+    renderBreakdown("browsersBody",  browsers);
+    renderBreakdown("referrersBody", referrers);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+document.getElementById("loadBtn")?.addEventListener("click", loadAll);
+document.addEventListener("DOMContentLoaded", loadAll);  // auto-load on page open
+</script>
+{% endblock %}
