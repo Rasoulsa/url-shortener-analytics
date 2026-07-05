@@ -23,8 +23,20 @@ def enqueue_click_event(
 
     If Celery/Redis broker is unavailable, fail open:
     the redirect should still work.
+
+    In test/eager mode (CELERY_TASK_ALWAYS_EAGER=true) we skip the broker
+    entirely — send_task() ignores the eager flag and would emit a warning.
     """
     if not settings.analytics_queue_enabled:
+        return False
+
+    # send_task() does not honour task_always_eager; skip the broker in
+    # eager/test mode to avoid the AlwaysEagerIgnored warning.
+    if celery_app.conf.task_always_eager:
+        logger.debug(
+            "Eager mode active — skipping broker enqueue for short_code=%s",
+            short_code,
+        )
         return False
 
     payload: dict[str, Any] = {
