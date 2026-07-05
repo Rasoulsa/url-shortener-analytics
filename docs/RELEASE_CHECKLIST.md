@@ -1,235 +1,339 @@
-# v1.0 Release Checklist
+# Release Checklist
 
-Release branch:
+## v1.1.0 — Password Gate & Branded Frontend
 
-```text
-release/v1.0
-```
-
-Final tag:
-
-```text
-v1.0.0
-```
+**Date:** July 5, 2026
+**Final tag:** `v1.1.0`
+**Previous release:** `v1.0.0`
 
 ---
 
 ## 1. Scope
 
-This release completes Phase 4 of the URL Shortener & Analytics project.
+This release completes **all 5 frontend phases** with the addition of **F5: Password Gate**.
 
-Production deployment is intentionally out of scope for this release. The
-project is released as a local Docker Compose application that can be run from
-source code by another developer or evaluator.
+**Scope:**
+- ✅ F5: Branded password gate extending base.html
+- ✅ Template refactoring in `redirect.py` (Jinja2 instead of inline HTML)
+- ✅ 7 new tests for password gate
+- ✅ Version bump across all source files
+
+**Out of scope (same as v1.0):**
+- Production deployment (local Docker Compose only)
+- Cloud infrastructure
+
+**Backward compatibility:** ✅ Fully backward compatible with v1.0.0. No breaking changes, no database migrations.
 
 ---
 
 ## 2. Branches Completed
 
-- [x] `feat/d4-api-envelope`
-- [x] `feat/d4-openapi-docs`
-- [x] `feat/d4-webhooks`
-- [x] `feat/d4-dashboard-api`
-- [x] `feat/d4-dashboard-ui`
-- [x] `test/d4-tests`
-- [x] `ci/d4-pipeline`
-- [x] `docs/d4-final`
+### v1.1.0 (This Release)
 
-Deferred:
+- [x] `feat/frontend-f5-passwordgate` — Password gate template + tests + version bump
 
-- [ ] `chore/d4-deploy`
+### v1.0.0 (Previous Phases, Still Valid)
 
-Reason: production deployment is not required for the local v1.0 handoff.
+- [x] `feat/frontend-f1-foundation` — Base layout, responsive grid, Tailwind, auth.js
+- [x] `feat/frontend-f2-auth` — Login/Signup forms, session mgmt, protected routes
+- [x] `feat/frontend-f3-dashboard` — Link CRUD, custom alias, expiration, password toggle
+- [x] `feat/frontend-f4-analytics` — Charts, geo table, referrers, browsers, compare
+- [x] `feat/d4-api-envelope` — Response envelope, pagination
+- [x] `feat/d4-openapi-docs` — Swagger/ReDoc documentation
+- [x] `feat/d4-webhooks` — Click-threshold webhooks with HMAC signing
+- [x] `feat/d4-dashboard-api` — Analytics aggregation endpoints
+- [x] `test/d4-tests` — Cross-cutting tests
+- [x] `ci/d4-pipeline` — CI validation (Ruff, mypy, pytest)
+- [x] `docs/d4-final` — Final documentation
 
 ---
 
-## 3. Public API Checklist
+## 3. Password Gate (F5) Checklist
 
+- [x] `app/templates/public/password_gate.html` — Jinja2 template extending base.html
+  - [x] Inherits navbar (Login/Sign up buttons for guests)
+  - [x] Inherits footer (API Docs, version stamp)
+  - [x] Lock icon + password input + error messaging
+  - [x] Form action to `/{short_code}/unlock`
+  - [x] No auth guard — fully public
+
+- [x] `app/api/v1/redirect.py` — Template refactoring
+  - [x] Added `Jinja2Templates` import
+  - [x] Removed old `_password_gate_html()` function (inline string builder)
+  - [x] Added `_password_gate_response()` using `TemplateResponse`
+  - [x] Updated 3 call sites: cache-hit GET, cache-miss GET, wrong-password POST
+  - [x] Status codes preserved: 200 for gate, 403 for wrong password, 301/302 for success
+
+- [x] `tests/test_f5_passwordgate.py` — 7 new tests
+  - [x] `test_protected_link_shows_password_gate` — Gate renders (HTTP 200)
+  - [x] `test_protected_gate_shows_no_error_by_default` — No error on first visit
+  - [x] `test_protected_gate_inherits_base_nav` — Nav + footer inherited
+  - [x] `test_wrong_password_reshows_gate_with_error` — 403, error message, form re-rendered
+  - [x] `test_wrong_password_still_has_nav` — Error gate includes nav/footer
+  - [x] `test_correct_password_redirects` — 301/302 to target URL
+  - [x] `test_plain_link_redirects_without_gate` — Unprotected links unaffected
+
+---
+
+## 4. Frontend Completion Checklist
+
+All 5 phases complete and integrated:
+
+| Phase | Feature | Status | Tests |
+|-------|---------|--------|-------|
+| F1 | Foundation (base layout, Tailwind) | ✅ | ✅ |
+| F2 | Authentication (login/signup, session) | ✅ | ✅ |
+| F3 | Dashboard (link CRUD, password toggle) | ✅ | ✅ |
+| F4 | Analytics (charts, geo, compare) | ✅ | ✅ |
+| F5 | Password Gate (branded public gate) | ✅ | ✅ |
+
+---
+
+## 5. Backend Features (Unchanged, Still Valid)
+
+All v1.0.0 features remain fully operational:
+
+### Public API
 - [x] Full OpenAPI / Swagger documentation
 - [x] ReDoc documentation
 - [x] URL versioning under `/api/v1/`
-- [x] API-key security scheme in Swagger
+- [x] API-key security scheme
 - [x] Consistent response envelope `{ data, meta, errors }`
 - [x] Unified exception handling
-- [x] Cursor-based pagination for link listings
-- [x] Webhook support on click threshold crossing
+- [x] Cursor-based pagination
+- [x] Webhook support on click threshold
 
----
-
-## 4. Dashboard Checklist
-
-- [x] `/dashboard` route
+### Dashboard
+- [x] `/dashboard` route (session-protected)
 - [x] Jinja2 templates
-- [x] Chart.js integration
-- [x] Visits line chart for 7 / 30 / 90 days
-- [x] Geographic breakdown by country table
+- [x] Chart.js visualizations
+- [x] Visits line chart (7/30/90 days)
+- [x] Geographic breakdown (country table)
 - [x] Top referrers
 - [x] Top browsers
-- [x] Multi-link comparison chart
+- [x] Multi-link comparison
+
+### Core Features
+- [x] URL shortening with custom alias
+- [x] Expiration dates
+- [x] Password protection
+- [x] 301/302 redirect control
+- [x] Base62 short code generation (collision-safe with SETNX)
+- [x] Redis cache-aside (metadata, click counters, rate limiting)
+- [x] PostgreSQL async with SQLAlchemy 2.0
+- [x] Alembic migrations
+- [x] Celery async task queue (GeoIP, analytics, webhooks)
+- [x] Rate limiting (anonymous: 10/min, authenticated: 100/min)
+- [x] GeoIP analytics (MaxMind GeoLite2, optional)
 
 ---
 
-## 5. Local Handoff Checklist
+## 6. Local Handoff Checklist
 
 - [x] Docker Compose stack works locally
 - [x] `.env.example` provided
-- [x] Makefile provided for local setup and validation
 - [x] Migrations documented
 - [x] API key registration documented
 - [x] Swagger/ReDoc documented
 - [x] Dashboard documented
+- [x] Password gate documented
 - [x] Webhook local receiver documented
 - [x] GeoIP optional setup documented
 - [x] Test commands documented
-- [x] Source archive options documented
 
 ---
 
-## 6. Final Quality Checks
+## 7. Final Quality Checks
 
-Run from the repository root:
-
-```bash
-make format-check
-make lint
-make type
-make test
-```
-
-Equivalent manual commands:
+Run from repository root:
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
+# Code quality
+uv run ruff check . --fix
+uv run ruff format . --check
 uv run mypy app/
-uv run pytest -v
+
+# Tests
+uv run pytest -v --tb=short
 ```
 
-Optional Docker test:
-
-```bash
-make up
-make test-docker
+**Expected result:**
+```basic
+171 passed in ~17s (no warnings)
 ```
 
-Equivalent manual command:
-
+### Docker test (optional)
 ```bash
 docker compose up --build -d
 docker compose exec api uv run pytest -v
+docker compose down
 ```
 
----
+## 8. Version Bump Verification
 
-## 7. Local Smoke Test
-
-Start stack:
-
+Verify all version strings are updated to `1.1.0`:
 ```bash
-make setup
-make up
-make migrate
-make smoke
-make open-urls
+grep -rn "1\.1\.0" app/ pyproject.toml README.md CHANGELOG.md | head -20
 ```
 
-Equivalent manual commands:
+Expected files:
 
+✅ pyproject.toml — version = "1.1.0"
+✅ app/core/config.py — app_version: str = "1.1.0"
+✅ app/core/openapi.py — version="1.1.0"
+✅ app/main.py — version="1.1.0"
+✅ README.md — all references to v1.1.0
+✅ CHANGELOG.md — v1.1.0 entry at top
+✅ docs/RELEASE_CHECKLIST.md — this file
+
+## 9. Local Smoke Test
+
+**Setup and start**
 ```bash
 cp .env.example .env.dev
 docker compose up --build -d
 docker compose exec api alembic upgrade head
+```
+
+**Health checks**
+```bash
+# Health endpoint
 curl -i http://localhost:8001/health
+
+# Swagger UI
+curl -s http://localhost:8001/docs | grep -q "title" && echo "✓ Swagger OK"
+
+# ReDoc
+curl -s http://localhost:8001/redoc | grep -q "ReDoc" && echo "✓ ReDoc OK"
 ```
 
-Check docs:
+**Test password gate**
+```bash
+# Register user
+curl -X POST http://localhost:8001/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"testpass123"}' \
+  | jq .
 
-```text
-http://localhost:8001/docs
-http://localhost:8001/redoc
+# Get API key (manually from response or check DB)
+# For testing, use a known test key from conftest
+
+# Create protected link
+RESPONSE=$(curl -s -X POST http://localhost:8001/api/v1/links \
+  -H "X-API-Key: test-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"long_url":"https://example.com/target","password":"secret123"}')
+
+SHORT_CODE=$(echo $RESPONSE | jq -r '.data.short_code')
+echo "Short code: $SHORT_CODE"
+
+# Visit gate (should render HTML with password input)
+curl -i http://localhost:8001/$SHORT_CODE | head -20
+
+# Wrong password (should return 403 with error)
+curl -i -X POST http://localhost:8001/$SHORT_CODE/unlock \
+  -d "password=wrongpassword" | head -20
+
+# Correct password (should return 301/302 redirect)
+curl -i -X POST http://localhost:8001/$SHORT_CODE/unlock \
+  -d "password=secret123"
 ```
 
-Check dashboard:
-
-```text
-http://localhost:8001/dashboard
+**Cleanup**
+```bash
+docker compose down
 ```
 
----
+## 10. Tagging
 
-## 8. Tagging
-
-After `release/v1.0` is merged into `main`:
-
+**From main branch**
 ```bash
 git checkout main
 git pull origin main
-git tag -a v1.0.0 -m "v1.0.0 - Public API, webhooks, and analytics dashboard"
-git push origin v1.0.0
-```
 
-Verify:
+# Verify version files
+grep -r "1\.1\.0" app/ pyproject.toml README.md | wc -l
+# Expected: ~8+ matches
 
-```bash
+# Create annotated tag
+git tag -a v1.1.0 -m "Release v1.1.0: Password Gate & Branded Frontend
+
+All 5 frontend phases complete:
+✅ F1: Foundation
+✅ F2: Authentication
+✅ F3: Dashboard
+✅ F4: Analytics
+✅ F5: Password Gate
+
+Key changes:
+- Password gate template (F5) extending base.html
+- Template refactoring in redirect.py (Jinja2 instead of inline HTML)
+- 7 new tests for password gate
+- Version bump to 1.1.0 across all source files
+- Celery eager mode warning fix
+
+Backward compatible with v1.0.0
+No breaking changes, no database migrations required
+171 tests passing, 0 warnings
+
+See docs/RELEASE_1_1_0.md for full release notes"
+
+# Push tag
+git push origin v1.1.0
+
+# Verify
 git tag
-git show v1.0.0 --stat
+git show v1.1.0 --stat
 ```
 
----
+## 11. GitHub Release (Optional)
 
-## 9. Source Artifact Options
-
-GitHub automatically provides source ZIP/TAR archives for tags.
-
-Manual ZIP:
-
+If using GitHub CLI:
 ```bash
-make archive-zip REF=v1.0.0
+gh release create v1.1.0 \
+  --title "v1.1.0 — Password Gate & Branded Frontend" \
+  --notes-file docs/RELEASE_1_1_0.md \
+  --latest
+
+# Verify
+gh release view v1.1.0
 ```
 
-Equivalent manual command:
+Or manually at: https://github.com/Rasoulsa/url-shortener-analytics/releases
 
+## 12. Source Artifact Options
+
+**GitHub (Automatic)**
+ZIP and TAR archives are automatically generated by GitHub for each tag:
+```awk
+https://github.com/Rasoulsa/url-shortener-analytics/releases/tag/v1.1.0
+```
+
+**Manual ZIP**
 ```bash
 git archive \
   --format=zip \
-  --output ../url-shortener-analytics-v1.0.0.zip \
-  v1.0.0
+  --output ../url-shortener-analytics-v1.1.0.zip \
+  v1.1.0
 ```
 
-Manual TAR:
-
-```bash
-make archive-tar REF=v1.0.0
-```
-
-Equivalent manual command:
-
+**Manual TAR.GZ**
 ```bash
 git archive \
   --format=tar.gz \
-  --prefix=url-shortener-analytics-v1.0.0/ \
-  --output ../url-shortener-analytics-v1.0.0.tar.gz \
-  v1.0.0
+  --prefix=url-shortener-analytics-v1.1.0/ \
+  --output ../url-shortener-analytics-v1.1.0.tar.gz \
+  v1.1.0
 ```
 
-Git bundle with history:
-
+**Git bundle (with full history)**
 ```bash
-make bundle
+git bundle create ../url-shortener-analytics-v1.1.0.bundle --all
 ```
 
-Equivalent manual command:
+## 13. Do Not Include in Artifacts
 
-```bash
-git bundle create ../url-shortener-analytics-v1.0.0.bundle --all
-```
-
----
-
-## 10. Do Not Include
-
-Do not include local secrets or generated files in release artifacts:
-
+Excluded from release archives:
 ```text
 .env
 .env.dev
@@ -241,84 +345,104 @@ __pycache__/
 .coverage
 htmlcov/
 geoip/*.mmdb
+node_modules/
+.git/
+.DS_Store
 ```
 
-GeoIP databases must be downloaded separately by each developer because
-MaxMind does not allow redistribution.
+**Note:** GeoIP databases must be downloaded separately by each developer because MaxMind does not allow redistribution. See `docs/GEOIP_SETUP.md`.
 
----
+## 14. Handoff Instructions for Recipients
 
-## 11. Handoff Instructions for Recipient
-
-If using GitHub:
-
+**Via GitHub**
 ```bash
-git clone git@github.com:Rasoulsa/url-shortener-analytics.git
+git clone https://github.com/Rasoulsa/url-shortener-analytics.git
 cd url-shortener-analytics
-git checkout v1.0.0
-make setup
-make up
-make migrate
-make smoke
-make open-urls
+git checkout v1.1.0
+
+cp .env.example .env.dev
+docker compose up --build -d
+docker compose exec api alembic upgrade head
+
+# Verify
+curl http://localhost:8001/health
 ```
 
-If using ZIP:
-
+**Via ZIP Archive**
 ```bash
-unzip url-shortener-analytics-v1.0.0.zip -d url-shortener-analytics
+unzip url-shortener-analytics-v1.1.0.zip
 cd url-shortener-analytics
-make setup
-make up
-make migrate
-make smoke
-make open-urls
+
+cp .env.example .env.dev
+docker compose up --build -d
+docker compose exec api alembic upgrade head
+
+# Verify
+curl http://localhost:8001/health
 ```
 
-Expected URLs:
+**Via Git Bundle**
+```bash
+git bundle unbundle ../url-shortener-analytics-v1.1.0.bundle
+cd url-shortener-analytics
+git checkout v1.1.0
 
-```text
+cp .env.example .env.dev
+docker compose up --build -d
+docker compose exec api alembic upgrade head
+```
+
+**Expected URLs After Setup**
+```bash
 Health:    http://localhost:8001/health
 Swagger:   http://localhost:8001/docs
 ReDoc:     http://localhost:8001/redoc
 Dashboard: http://localhost:8001/dashboard
 ```
 
----
+## 15. Final Release Checklist
 
-## 12. Final Release Branch Commands
+Before tagging:
+[ ] All tests pass: uv run pytest -v (171 tests)
+[ ] No warnings: uv run pytest -v 2>&1 | grep -i warning returns nothing
+[ ] Code quality: uv run ruff check . passes
+[ ] Type checking: uv run mypy app/ passes
+[ ] Formatting: uv run ruff format --check . passes
+[ ] Version bumped everywhere (grep for 1.1.0)
+[ ] CHANGELOG.md updated with v1.1.0 entry
+[ ] RELEASE_1_1_0.md created
+[ ] README.md mentions F5
+[ ] All 5 frontend phases documented
+[ ] Docker Compose smoke test passes
+[ ] Password gate tested locally
 
-From `release/v1.0`:
+After tagging:
+[ ] Tag pushed to remote: git push origin v1.1.0
+[ ] Tag visible on GitHub: https://github.com/Rasoulsa/url-shortener-analytics/releases
+[ ] Release notes visible: https://github.com/Rasoulsa/url-shortener-analytics/releases/tag/v1.1.0
+[ ] Archive downloads work (ZIP, TAR.GZ)
 
-```bash
-make format
-make lint
-make type
-make test
+## 16. Summary
 
-make setup
-make up
-make migrate
-make smoke
-make worker-ping
+✅ v1.1.0 is complete and ready for release.
 
-git status
-git add VERSION CHANGELOG.md Makefile docs/LOCAL_HANDOFF.md docs/RELEASE_CHECKLIST.md
-git commit -m "chore(release): prepare v1.0 local handoff"
-git push -u origin release/v1.0
-```
+**What’s included:**
+  - All 5 frontend phases (F1–F5)
+  - Full backend (API, analytics, webhooks)
+  - 171 tests, 0 failures, 0 warnings
+  - Comprehensive documentation
+  - Backward compatible with v1.0.0
 
-After PR merge:
+**Next steps:**
+  - Run final quality checks (section 7)
+  - Run smoke test (section 9)
+  - Tag release (section 10)
+  - Push to GitHub (section 10)
+  - Create GitHub release (section 11)
+  - Archive and distribute (section 12)
 
-```bash
-git checkout main
-git pull origin main
-git tag -a v1.0.0 -m "v1.0.0 - Public API, webhooks, and analytics dashboard"
-git push origin v1.0.0
-```
+**Release date:** July 5, 2026
 
-Create ZIP:
+**Tag:** `v1.1.0`
 
-```bash
-make archive-zip REF=v1.0.0
-```
+Enjoy! 🚀

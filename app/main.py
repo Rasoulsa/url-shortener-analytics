@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="URL Shortener & Analytics API",
-    version="1.0.0",
+    version="1.1.0",
     # Disable default /docs and /redoc so we can serve custom ones below
     docs_url=None,
     redoc_url=None,

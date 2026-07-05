@@ -72,22 +72,22 @@ Dashboard: http://localhost:8001/dashboard
 ```bash
 git clone git@github.com:Rasoulsa/url-shortener-analytics.git
 cd url-shortener-analytics
-git checkout v1.0.0
+git checkout v1.1.0
 ```
 
 ### Option B — Extract ZIP archive
 
 ```bash
-unzip url-shortener-analytics-v1.0.0.zip -d url-shortener-analytics
+unzip url-shortener-analytics-v1.1.0.zip -d url-shortener-analytics
 cd url-shortener-analytics
 ```
 
 ### Option C — Clone from Git bundle
 
 ```bash
-git clone url-shortener-analytics-v1.0.0.bundle url-shortener-analytics
+git clone url-shortener-analytics-v1.1.0.bundle url-shortener-analytics
 cd url-shortener-analytics
-git checkout v1.0.0
+git checkout v1.1.0
 ```
 
 ---
