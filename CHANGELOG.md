@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.1.0 — Password Gate & Branded Frontend (July 5, 2026)
+
+### New Features
+- **F5: Password Gate** — Branded, fully-public password-protected link gate extending base.html
+  - No VisionSAN account required to enter password
+  - Tailwind-styled card with lock icon, password input, error handling
+  - `POST /{short_code}/unlock` validates password → redirects (301/302) or re-renders error (403)
+  - Inherits navbar and footer from base.html for visual consistency
+
+### Frontend Completion
+All 5 frontend phases now complete:
+- ✅ F1: Foundation (base layout, responsive grid, Tailwind)
+- ✅ F2: Authentication (login/signup, session management, protected routes)
+- ✅ F3: Dashboard (link creation, custom alias, expiration, password protection)
+- ✅ F4: Analytics (charts, geographic breakdown, referrers, multi-link comparison)
+- ✅ F5: Password Gate (public password-protected link interface)
+
+### Testing
+- 171 test cases across all 5 frontend phases
+- Fixed Celery eager mode warning in analytics queue service
+- All tests passing with no warnings
+
+### Backward Compatibility
+✅ Fully backward compatible with v1.0.0. No breaking changes, no DB migrations required.
+
+---
+
+# Changelog
+
 All notable changes to this project are documented here.
 
 ---

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # ── App ───────────────────────────────────────────────
     app_name: str = "URL Shortener & Analytics"
-    app_version: str = "1.0.0"
+    app_version: str = "1.1.0"
     base_url: str = "http://localhost:8000"
     short_code_length: int = 7
     debug: bool = False

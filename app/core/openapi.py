@@ -182,7 +182,7 @@ def build_openapi_schema(app: FastAPI) -> dict:  # type: ignore[type-arg]
 
     schema = get_openapi(
         title="URL Shortener & Analytics API",
-        version="1.0.0",
+        version="1.1.0",
         summary="Production-grade URL shortener with GeoIP analytics.",
         description=_API_DESCRIPTION,
         routes=app.routes,
